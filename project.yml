@@ -48,6 +48,7 @@ targets:
         NSMotionUsageDescription: Nudge uses AirPods head tracking so guidance sounds stay fixed on the button.
         AnthropicAPIKey: $(ANTHROPIC_API_KEY)
         GeminiAPIKey: $(GEMINI_API_KEY)
+        OpenAIAPIKey: $(OPENAI_API_KEY)
 
   NudgeWatch:
     type: application

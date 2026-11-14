@@ -110,11 +110,15 @@ struct CloudPlanner: TaskPlanner {
     let client: JSONModelClient
     var name: String { client.displayName }
 
-    /// Uses whichever cloud key the build was given: Anthropic first, then Gemini. Nil if neither is set.
+    /// Uses every cloud key the build was given, in this order: OpenAI, Anthropic, Gemini.
+    /// The first is the main model; the others are backups if it fails. Nil if no key is set.
     static func fromConfiguredKeys() -> CloudPlanner? {
-        if let claude = ClaudeClient() { return CloudPlanner(client: claude) }
-        if let gemini = GeminiClient() { return CloudPlanner(client: gemini) }
-        return nil
+        var clients: [JSONModelClient] = []
+        if let openAI = OpenAIClient() { clients.append(openAI) }
+        if let claude = ClaudeClient() { clients.append(claude) }
+        if let gemini = GeminiClient() { clients.append(gemini) }
+        guard !clients.isEmpty else { return nil }
+        return CloudPlanner(client: clients.count == 1 ? clients[0] : FallbackClient(clients: clients))
     }
 
     private static let system = """
