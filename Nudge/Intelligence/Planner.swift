@@ -31,6 +31,25 @@ struct PlanStep: Codable, Equatable {
     var expect: String
     /// Whether the previous press did what was expected.
     var previousStepSucceeded: Bool
+    /// The presses that follow this one if all goes as expected, so the app can move straight
+    /// on to the next button without waiting for an answer.
+    var thenPress: [FollowingPress]?
+
+    struct FollowingPress: Codable, Equatable {
+        var targetID: Int
+        var targetX: Double
+        var targetY: Double
+        var targetName: String
+        var expect: String
+
+        enum CodingKeys: String, CodingKey {
+            case targetID = "target_id"
+            case targetX = "target_x"
+            case targetY = "target_y"
+            case targetName = "target_name"
+            case expect
+        }
+    }
 
     enum CodingKeys: String, CodingKey {
         case action
@@ -41,6 +60,7 @@ struct PlanStep: Codable, Equatable {
         case say
         case expect
         case previousStepSucceeded = "previous_step_succeeded"
+        case thenPress = "then_press"
     }
 }
 
@@ -174,6 +194,15 @@ struct CloudPlanner: TaskPlanner {
     Never mention ids, percentages or coordinates. "expect" briefly states what should change on \
     the screen after the press. "target_name" is the button's name as you would say it. Fill unused \
     fields with -1, 0 or an empty string.
+
+    "then_press": when the action is "tap" and the rest of the way to the goal is already clear \
+    from the screen now, list the presses that come after this one, in order, each with target_id \
+    (or -1 with target_x and target_y), target_name and expect. For "cook for 90 seconds" on a \
+    keypad that takes a time directly, that is tap 9, then_press 0 and Start. The app moves the \
+    user straight on to those buttons and checks each press with you in the background, so list \
+    everything you can. Only list buttons that are on the screen now. Stop the list before a press \
+    that is risky and needs "confirm", and before anything that depends on what a later screen \
+    shows. Leave it empty for every other action.
     """
 
     private static let schema: [String: Any] = [
@@ -187,9 +216,24 @@ struct CloudPlanner: TaskPlanner {
             "say": ["type": "string"],
             "expect": ["type": "string"],
             "previous_step_succeeded": ["type": "boolean"],
+            "then_press": [
+                "type": "array",
+                "items": [
+                    "type": "object",
+                    "properties": [
+                        "target_id": ["type": "integer"],
+                        "target_x": ["type": "number"],
+                        "target_y": ["type": "number"],
+                        "target_name": ["type": "string"],
+                        "expect": ["type": "string"],
+                    ],
+                    "required": ["target_id", "target_x", "target_y", "target_name", "expect"],
+                    "additionalProperties": false,
+                ] as [String: Any],
+            ] as [String: Any],
         ],
         "required": ["action", "target_id", "target_x", "target_y", "target_name", "say", "expect",
-                     "previous_step_succeeded"],
+                     "previous_step_succeeded", "then_press"],
         "additionalProperties": false,
     ]
 

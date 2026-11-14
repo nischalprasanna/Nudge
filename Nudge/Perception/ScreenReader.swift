@@ -35,7 +35,10 @@ final class ScreenReader {
     /// A big image is also read in overlapping quarters. Vision shrinks what it is given before
     /// looking for text, so the small print on a keypad that fills only part of the picture is
     /// lost in a single pass over the whole thing; each quarter keeps its detail.
-    func readText(in image: CGImage) -> [ScreenElement] {
+    func readText(in original: CGImage) -> [ScreenElement] {
+        // A keypad seen from arm's length is only a few hundred pixels across, with letters
+        // under ten pixels tall. Enlarging it first roughly doubles how many labels are read.
+        let image = Self.enlarged(original)
         let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
         var regions = [whole]
         let columns = image.width >= 1500 ? 2 : 1
@@ -80,6 +83,21 @@ final class ScreenReader {
             if abs(a.box.midY - b.box.midY) > 0.04 { return a.box.midY < b.box.midY }
             return a.box.midX < b.box.midX
         }
+    }
+
+    /// Scales a small image up so its longest side is about 2000 pixels (at most four times).
+    static func enlarged(_ image: CGImage) -> CGImage {
+        let longest = CGFloat(max(image.width, image.height))
+        guard longest < 1600, longest > 0 else { return image }
+        let scale = min(4, 2000 / longest)
+        let width = Int(CGFloat(image.width) * scale)
+        let height = Int(CGFloat(image.height) * scale)
+        guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: height))
+        return context.makeImage() ?? image
     }
 
     /// Reads the text in one part of the image. `region` is normalized with the origin at the

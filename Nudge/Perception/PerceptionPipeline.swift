@@ -744,6 +744,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                 self.rectifiedImage = UIImage(cgImage: image)
                 self.isReading = false
                 self.status = "Read \(elements.count) labels in \(ms) ms"
+                DebugLog.add("reader: \(image.width)x\(image.height) px from a \(Int(geometry.imageSize.width))-wide frame, \(elements.count) labels in \(ms) ms")
             }
             self.visionQueue.async { self.finishRead(reading, image) }
         }
