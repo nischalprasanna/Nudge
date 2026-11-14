@@ -7,6 +7,9 @@ final class Listener {
     private let engine = AVAudioEngine()
     private let recognizer = SFSpeechRecognizer()
 
+    /// Called on the main thread while listening with the microphone level, 0 (silence) to 1 (loud).
+    var onLevel: ((Float) -> Void)?
+
     private final class State {
         var best = ""
         var lastChange = Date()
@@ -37,8 +40,17 @@ final class Listener {
         let format = input.outputFormat(forBus: 0)
         guard format.sampleRate > 0, format.channelCount > 0 else { return nil }
         input.removeTap(onBus: 0)
+        let onLevel = self.onLevel
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { buffer, _ in
             request.append(buffer)
+            guard let onLevel, let samples = buffer.floatChannelData?[0], buffer.frameLength > 0 else { return }
+            var sum: Float = 0
+            for index in 0..<Int(buffer.frameLength) { sum += samples[index] * samples[index] }
+            let rms = (sum / Float(buffer.frameLength)).squareRoot()
+            // Map roughly -50 dB (quiet room) ... -12 dB (speaking close) onto 0...1.
+            let decibels = 20 * log10(max(rms, 0.000_01))
+            let level = min(max((decibels + 50) / 38, 0), 1)
+            DispatchQueue.main.async { onLevel(level) }
         }
         engine.prepare()
         do {

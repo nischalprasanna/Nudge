@@ -2,6 +2,23 @@ import Combine
 import SwiftUI
 import UIKit
 
+/// What the dot field and the direction word are showing. Kept apart from `TaskSession`
+/// because it changes many times a second while guiding, and only the visualiser should redraw.
+@MainActor
+final class GuidanceVisual: ObservableObject {
+    @Published var mode: DotFieldMode = .idle
+    /// The latest one-word cue ("Left", "Closer", "Tap"), without its full stop. Empty when there is none.
+    @Published var word = ""
+}
+
+/// One button press in the current task, for the progress trail.
+struct TrailStep: Identifiable, Equatable {
+    enum State { case current, done, failed }
+    let id = UUID()
+    var name: String
+    var state: State
+}
+
 /// Runs one task from start to finish: find the screen, read it, hear the goal, then loop
 /// plan -> guide -> tap -> re-read -> verify until the goal is done.
 @MainActor
@@ -14,18 +31,47 @@ final class TaskSession: ObservableObject {
         case planning = "Working out the next step"
         case guiding = "Guiding your finger"
         case verifying = "Checking the screen"
+
+        /// SF Symbol shown beside the phase name.
+        var symbol: String {
+            switch self {
+            case .idle: return "circle.grid.2x2"
+            case .findingScreen: return "viewfinder"
+            case .reading: return "text.viewfinder"
+            case .listening: return "waveform"
+            case .planning: return "ellipsis"
+            case .guiding: return "hand.point.up.left"
+            case .verifying: return "checkmark.circle"
+            }
+        }
     }
 
-    @Published private(set) var phase: Phase = .idle
+    /// How the last task ended.
+    enum Outcome: Equatable { case none, done, problem }
+
+    @Published private(set) var phase: Phase = .idle {
+        didSet { if phase != .guiding { refreshVisual() } }
+    }
     @Published private(set) var isRunning = false
     @Published private(set) var goal = ""
+    /// The current full instruction, as last spoken ("Press Time Cook.").
+    @Published private(set) var instruction = ""
+    @Published private(set) var trail: [TrailStep] = []
+    @Published private(set) var outcome: Outcome = .none
     @Published private(set) var transcript: [String] = []
     @Published private(set) var plannerName = "No planner (API key not set)"
-    @Published var channels = FeedbackChannels() {
-        didSet { applyChannels() }
+    @Published var channels = TaskSession.savedChannels() {
+        didSet {
+            applyChannels()
+            Self.save(channels)
+        }
     }
 
     let pipeline = PerceptionPipeline()
+    let visual = GuidanceVisual()
+
+    /// One-word cues given during guidance. They drive the big word on screen, not the instruction line.
+    private static let cueWords: Set<String> = ["Left.", "Right.", "Up.", "Down.", "Closer.", "Lift.", "Tap."]
 
     private let speaker = Speaker()
     private let listener = Listener()
@@ -45,6 +91,15 @@ final class TaskSession: ObservableObject {
             guard let self else { return }
             self.transcript.append(line)
             if self.transcript.count > 30 { self.transcript.removeFirst(self.transcript.count - 30) }
+            if Self.cueWords.contains(line) || line.hasPrefix("Tap") {
+                self.visual.word = line.hasPrefix("Tap") ? "Tap" : String(line.dropLast())
+            } else {
+                self.instruction = line
+            }
+        }
+        listener.onLevel = { [weak self] level in
+            guard let self, self.phase == .listening else { return }
+            self.visual.mode = .listening(level: level)
         }
         guidance.onHaptic = { command in
             DispatchQueue.main.async { PhoneWatchLink.shared.send(command) }
@@ -79,6 +134,11 @@ final class TaskSession: ObservableObject {
         isRunning = true
         transcript.removeAll()
         goal = ""
+        instruction = ""
+        trail = []
+        outcome = .none
+        visual.word = ""
+        Haptics.tap()
         runTask = Task { [weak self] in
             await self?.run(typedGoal: typedGoal)
             self?.finish()
@@ -105,6 +165,58 @@ final class TaskSession: ObservableObject {
         guidance.channels = channels
         tones.isEnabled = channels.tones
         speaker.isEnabled = channels.voice
+    }
+
+    // MARK: Saved preferences
+
+    private static func savedChannels() -> FeedbackChannels {
+        let defaults = UserDefaults.standard
+        func value(_ key: String) -> Bool { defaults.object(forKey: key) as? Bool ?? true }
+        return FeedbackChannels(tones: value("channel.tones"), voice: value("channel.voice"), watch: value("channel.watch"))
+    }
+
+    private static func save(_ channels: FeedbackChannels) {
+        let defaults = UserDefaults.standard
+        defaults.set(channels.tones, forKey: "channel.tones")
+        defaults.set(channels.voice, forKey: "channel.voice")
+        defaults.set(channels.watch, forKey: "channel.watch")
+    }
+
+    // MARK: What the screen shows
+
+    /// Sets the dot field for every phase except guiding, which updates it continuously.
+    private func refreshVisual() {
+        switch phase {
+        case .idle:
+            switch outcome {
+            case .none: visual.mode = .idle
+            case .done: visual.mode = .success
+            case .problem: visual.mode = .problem
+            }
+        case .listening:
+            visual.mode = .listening(level: 0)
+        case .findingScreen, .reading, .planning, .verifying:
+            visual.mode = .working
+        case .guiding:
+            break
+        }
+        if phase != .guiding { visual.word = "" }
+    }
+
+    /// Ends the task on a good note: chime, tick, and the closing sentence.
+    private func succeed(_ text: String) async {
+        outcome = .done
+        tones.playSuccess()
+        Haptics.success()
+        await speaker.sayAndWait(text)
+    }
+
+    /// Ends the task with a problem: error sound and what went wrong.
+    private func fail(_ text: String) async {
+        outcome = .problem
+        tones.playError()
+        Haptics.warning()
+        await speaker.sayAndWait(text)
     }
 
     // MARK: The task loop
@@ -135,8 +247,7 @@ final class TaskSession: ObservableObject {
             }
             guard pipeline.isAnchored else {
                 if !Task.isCancelled {
-                    tones.playError()
-                    await speaker.sayAndWait("I couldn't find a screen. Try holding the phone about forty centimetres away.")
+                    await fail("I couldn't find a screen. Try holding the phone about forty centimetres away.")
                 }
                 return
             }
@@ -191,38 +302,32 @@ final class TaskSession: ObservableObject {
                 step = try await planner.nextStep(request)
             } catch {
                 if Task.isCancelled { return }
-                tones.playError()
-                await speaker.sayAndWait("I couldn't reach the planner. \(error.localizedDescription)")
+                await fail("I couldn't reach the planner. \(error.localizedDescription)")
                 return
             }
             if Task.isCancelled { return }
 
             switch step.action {
             case .done:
-                tones.playSuccess()
-                await speaker.sayAndWait(step.say.isEmpty ? "Done." : step.say)
+                await succeed(step.say.isEmpty ? "Done." : step.say)
                 return
 
             case .refusePayment:
-                tones.playError()
-                await speaker.sayAndWait("This is a payment screen. Nudge does not handle payments, so I'm stopping here.")
+                await fail("This is a payment screen. Nudge does not handle payments, so I'm stopping here.")
                 return
 
             case .cannot:
-                tones.playError()
-                await speaker.sayAndWait(step.say.isEmpty ? "I can't do that from this screen." : step.say)
+                await fail(step.say.isEmpty ? "I can't do that from this screen." : step.say)
                 return
 
             case .look:
                 looks += 1
                 if SafetyScreen.mayShowPersonalInformation(current.reading) {
-                    tones.playError()
-                    await speaker.sayAndWait("This screen may show personal information, so I won't send a picture of it. I can't work out the buttons from the text alone.")
+                    await fail("This screen may show personal information, so I won't send a picture of it. I can't work out the buttons from the text alone.")
                     return
                 }
                 guard looks <= 2 else {
-                    tones.playError()
-                    await speaker.sayAndWait("I can't work out the buttons on this screen.")
+                    await fail("I can't work out the buttons on this screen.")
                     return
                 }
                 sendImage = true
@@ -238,11 +343,14 @@ final class TaskSession: ObservableObject {
 
             case .tap:
                 guard let target = target(for: step, in: current.reading) else {
-                    tones.playError()
-                    await speaker.sayAndWait("I couldn't locate that button on the screen.")
+                    await fail("I couldn't locate that button on the screen.")
                     return
                 }
-                if !step.previousStepSucceeded { tones.playError() }
+                if !step.previousStepSucceeded {
+                    tones.playError()
+                    if let last = trail.indices.last { trail[last].state = .failed }
+                }
+                trail.append(TrailStep(name: target.name, state: .current))
                 await speaker.sayAndWait(step.say.isEmpty ? "Next, press \(target.name)." : step.say)
                 if Task.isCancelled { return }
 
@@ -251,13 +359,14 @@ final class TaskSession: ObservableObject {
                 guidance.tapPhrase = history.isEmpty ? "Tap, then move your hand away." : "Tap."
                 guard await guide(to: target) else {
                     if !Task.isCancelled {
-                        tones.playError()
-                        await speaker.sayAndWait("I lost track of your finger for too long, so I've stopped.")
+                        await fail("I lost track of your finger for too long, so I've stopped.")
                     }
                     return
                 }
 
                 phase = .verifying
+                Haptics.tap()
+                if let last = trail.indices.last { trail[last].state = .done }
                 history.append(CompletedStep(targetName: target.name, expected: step.expect))
                 previous = current.reading
                 confirmedRisk = false
@@ -282,8 +391,7 @@ final class TaskSession: ObservableObject {
             try? await Task.sleep(nanoseconds: 1_200_000_000)
         }
         if !Task.isCancelled {
-            tones.playError()
-            await speaker.sayAndWait("I couldn't read the screen, so I've stopped.")
+            await fail("I couldn't read the screen, so I've stopped.")
         }
         return nil
     }
@@ -309,8 +417,7 @@ final class TaskSession: ObservableObject {
 
     private func stopIfPayment(_ reading: ScreenReading) async -> Bool {
         guard SafetyScreen.looksLikePayment(reading) else { return false }
-        tones.playError()
-        await speaker.sayAndWait("This looks like a payment screen. Nudge does not handle payments, so I'm stopping here.")
+        await fail("This looks like a payment screen. Nudge does not handle payments, so I'm stopping here.")
         return true
     }
 
@@ -370,7 +477,22 @@ final class TaskSession: ObservableObject {
         var awaySince: Date?
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 50_000_000)
-            if guidance.snapshot.hasArrived {
+            let snapshot = guidance.snapshot
+            switch snapshot.phase {
+            case .onTarget:
+                visual.mode = .tap
+            case .aboveTarget:
+                visual.mode = .closer
+            case .seeking, .idle:
+                if let offset = snapshot.offset, let distance = snapshot.distance {
+                    visual.mode = .seeking(direction: CGVector(dx: CGFloat(offset.x), dy: CGFloat(offset.y)),
+                                           closeness: 1 - min(distance / 0.12, 1))
+                } else {
+                    visual.mode = .working
+                    visual.word = ""
+                }
+            }
+            if snapshot.hasArrived {
                 let finger = pipeline.finger
                 let away = finger.map { !(-0.3...1.3).contains($0.uv.x) || !(-0.3...1.3).contains($0.uv.y) } ?? true
                 if away {
@@ -424,3 +546,75 @@ final class TaskSession: ObservableObject {
         return scaled.jpegData(compressionQuality: 0.75)
     }
 }
+
+#if targetEnvironment(simulator)
+extension TaskSession {
+    /// Puts the screen into a fixed state so its layout can be checked in the simulator,
+    /// which has no camera. Chosen with the launch argument `-NudgePreview <name>`.
+    func applyPreview(_ name: String) {
+        goal = "heat for 90 seconds"
+        trail = [TrailStep(name: "Time Cook", state: .done), TrailStep(name: "1", state: .done),
+                 TrailStep(name: "3", state: .current)]
+        isRunning = true
+        var overlay = PerceptionPipeline.Overlay()
+        overlay.anchored = [CGPoint(x: 0.2, y: 0.2), CGPoint(x: 0.8, y: 0.2), CGPoint(x: 0.8, y: 0.85), CGPoint(x: 0.2, y: 0.85)]
+        overlay.target = CGPoint(x: 0.62, y: 0.55)
+        overlay.fingertip = CGPoint(x: 0.4, y: 0.7)
+        switch name {
+        case "listening":
+            trail = []
+            goal = ""
+            phase = .listening
+            instruction = "What would you like to do?"
+            visual.mode = .listening(level: 0.7)
+            overlay.target = nil
+            overlay.fingertip = nil
+        case "planning":
+            phase = .planning
+            instruction = "Set to 1 minute. Next, press 3."
+            visual.mode = .working
+            overlay.target = nil
+            overlay.fingertip = nil
+        case "seeking":
+            phase = .guiding
+            instruction = "Next, press 3."
+            visual.mode = .seeking(direction: CGVector(dx: 0.05, dy: -0.03), closeness: 0.45)
+            visual.word = "Right"
+        case "closer":
+            phase = .guiding
+            instruction = "Next, press 3."
+            visual.mode = .closer
+            visual.word = "Closer"
+            overlay.fingertip = overlay.target
+        case "tap":
+            phase = .guiding
+            instruction = "Next, press 3."
+            visual.mode = .tap
+            visual.word = "Tap"
+            overlay.fingertip = overlay.target
+        case "done":
+            isRunning = false
+            trail = trail.map { TrailStep(name: $0.name, state: .done) } + [TrailStep(name: "0", state: .done), TrailStep(name: "Start", state: .done)]
+            outcome = .done
+            phase = .idle
+            instruction = "Heating for 1 minute 30. Done."
+            overlay.target = nil
+            overlay.fingertip = nil
+        case "problem":
+            isRunning = false
+            trail[2].state = .failed
+            outcome = .problem
+            phase = .idle
+            instruction = "This looks like a payment screen. Nudge does not handle payments, so I'm stopping here."
+            overlay.target = nil
+            overlay.fingertip = nil
+        default:
+            isRunning = false
+            trail = []
+            goal = ""
+            overlay = PerceptionPipeline.Overlay()
+        }
+        pipeline.setPreviewOverlay(overlay)
+    }
+}
+#endif

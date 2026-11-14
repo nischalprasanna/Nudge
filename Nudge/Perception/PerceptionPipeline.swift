@@ -680,3 +680,12 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         DispatchQueue.main.async { self.status = text }
     }
 }
+
+#if targetEnvironment(simulator)
+extension PerceptionPipeline {
+    /// Simulator only: shows a fixed overlay so screen layouts can be checked without a camera.
+    func setPreviewOverlay(_ overlay: Overlay) {
+        self.overlay = overlay
+    }
+}
+#endif

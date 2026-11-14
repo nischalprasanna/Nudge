@@ -40,6 +40,8 @@ final class GuidanceEngine {
         var hasArrived = false
         var distance: Float?
         var lastSeen: TimeInterval = 0
+        /// From the finger to the button in metres: x to the right, y down. Nil while the finger is not seen.
+        var offset: SIMD2<Float>?
     }
 
     private enum Axis { case horizontal, vertical }
@@ -139,6 +141,7 @@ final class GuidanceEngine {
             guard let finger else {
                 cue = .silent
                 state.snapshot.distance = nil
+                state.snapshot.offset = nil
                 state.dwellStart = nil
                 state.lowestAbove = nil
                 if state.snapshot.phase != .seeking { state.snapshot.phase = .seeking }
@@ -158,6 +161,7 @@ final class GuidanceEngine {
             let dy = Float(target.uv.y - finger.uv.y) * state.screenHeight
             let distance = (dx * dx + dy * dy).squareRoot()
             state.snapshot.distance = distance
+            state.snapshot.offset = SIMD2(dx, dy)
 
             let wasOver = state.snapshot.phase == .onTarget || state.snapshot.phase == .aboveTarget
             // A little slack once over the button, so small tremors do not flip the state.
