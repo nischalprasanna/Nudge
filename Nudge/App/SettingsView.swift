@@ -5,6 +5,8 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var watchLink: PhoneWatchLink
+    @ObservedObject private var log = TestLog.shared
+    @State private var confirmClear = false
 
     @AppStorage("channel.tones") private var tones = true
     @AppStorage("channel.voice") private var voice = true
@@ -44,6 +46,25 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    LabeledContent("Attempts recorded", value: "\(log.records.count)")
+                    if let rate = log.successRate {
+                        LabeledContent("Completed", value: "\(Int((rate * 100).rounded())) percent")
+                    }
+                    if let url = log.exportCSV(), !log.records.isEmpty {
+                        ShareLink(item: url) {
+                            Label("Share as a spreadsheet file", systemImage: "square.and.arrow.up")
+                        }
+                    }
+                    if !log.records.isEmpty {
+                        Button("Clear the log", role: .destructive) { confirmClear = true }
+                    }
+                } header: {
+                    Text("Test log")
+                } footer: {
+                    Text("Each task is recorded on this phone: goal, steps, corrections, time and result. Nothing is sent anywhere unless you share the file.")
+                }
+
+                Section {
                     NavigationLink("Camera and tracking test") {
                         PerceptionTestView()
                     }
@@ -56,6 +77,12 @@ struct SettingsView: View {
                 } footer: {
                     Text("For checking the camera, finger tracking and watch link.")
                 }
+            }
+            .confirmationDialog("Clear every recorded attempt?", isPresented: $confirmClear, titleVisibility: .visible) {
+                Button("Clear the log", role: .destructive) { log.clear() }
+                Button("Keep it", role: .cancel) {}
+            } message: {
+                Text("This cannot be undone.")
             }
             .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)

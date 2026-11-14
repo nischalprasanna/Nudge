@@ -80,6 +80,8 @@ final class TaskSession: ObservableObject {
     private var planner: TaskPlanner?
     private var runTask: Task<Void, Never>?
     private var isPrepared = false
+    /// When the current attempt began. Nil once it has been written to the test log.
+    private var attemptStarted: Date?
 
     init() {
         guidance = GuidanceEngine(tones: tones, speaker: speaker)
@@ -139,8 +141,11 @@ final class TaskSession: ObservableObject {
         outcome = .none
         visual.word = ""
         Haptics.tap()
+        attemptStarted = Date()
         runTask = Task { [weak self] in
             await self?.run(typedGoal: typedGoal)
+            guard !Task.isCancelled else { return }
+            self?.logAttempt(stopped: false)
             self?.finish()
         }
     }
@@ -149,6 +154,7 @@ final class TaskSession: ObservableObject {
         guard isRunning else { return }
         runTask?.cancel()
         runTask = nil
+        logAttempt(stopped: true)
         finish()
         if announce { speaker.say("Stopped.") } else { speaker.stop() }
     }
@@ -165,6 +171,32 @@ final class TaskSession: ObservableObject {
         guidance.channels = channels
         tones.isEnabled = channels.tones
         speaker.isEnabled = channels.voice
+    }
+
+    // MARK: Test log
+
+    /// Records the attempt that just ended. Attempts that never got as far as a goal are not recorded.
+    private func logAttempt(stopped: Bool) {
+        guard let started = attemptStarted else { return }
+        attemptStarted = nil
+        guard !goal.isEmpty else { return }
+        let result: String
+        if stopped { result = "stopped" } else { result = outcome == .done ? "success" : "failed" }
+        var on: [String] = []
+        if channels.tones { on.append("tones") }
+        if channels.voice { on.append("voice") }
+        if channels.watch { on.append("watch") }
+        let screen = pipeline.screenSizeText.isEmpty ? "Unsaved screen" : "Unsaved screen (\(pipeline.screenSizeText))"
+        TestLog.shared.add(TaskRecord(startedAt: started,
+                                      device: screen,
+                                      goal: goal,
+                                      outcome: result,
+                                      reason: result == "success" ? "" : instruction,
+                                      stepsCompleted: trail.filter { $0.state == .done }.count,
+                                      recoveries: trail.filter { $0.state == .failed }.count,
+                                      seconds: Date().timeIntervalSince(started),
+                                      channels: on.isEmpty ? "none" : on.joined(separator: "+"),
+                                      planner: plannerName))
     }
 
     // MARK: Saved preferences

@@ -61,6 +61,7 @@ final class GuidanceEngine {
         var lastVoiceText = ""
         var lastHeightPrompt: TimeInterval = 0
         var lastMissingPrompt: TimeInterval = 0
+        var missingPrompts = 0
         var startedAt: TimeInterval = 0
         var lastApproachPulse: TimeInterval = 0
         var axis: Axis?
@@ -150,7 +151,11 @@ final class GuidanceEngine {
                    now - max(state.snapshot.lastSeen, state.startedAt) > 3,
                    now - state.lastMissingPrompt > 8 {
                     state.lastMissingPrompt = now
-                    say = "I can't see your finger."
+                    state.missingPrompts += 1
+                    // The second time, say what usually fixes it: the hand is hiding the finger.
+                    say = state.missingPrompts == 2
+                        ? "Hold the phone higher, so it looks down at your hand."
+                        : "I can't see your finger."
                 }
                 return
             }
