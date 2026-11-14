@@ -69,6 +69,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     private var stableCount = 0
     private var frameIndex = 0
     private var wantsAnchorNow = false
+    private var forcedAnchorNeedsText = false
     private var wantsReadFromNextFrame = false
     private var smoothedUV: simd_float2?
     private var smoothedHover: Float?
@@ -120,16 +121,20 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     // MARK: Commands (call from any thread)
 
     /// Anchor right now using the current outline, or the middle of the view if none is detected.
-    func anchorNow() {
+    /// With `requireText`, it waits instead until there are labels to anchor to: an outline
+    /// holding text, or text in the middle of the view.
+    func anchorNow(requireText: Bool = false) {
         visionQueue.async {
             self.anchor = nil
             self.wantsAnchorNow = true
+            self.forcedAnchorNeedsText = requireText
         }
     }
 
     func clearAnchor() {
         visionQueue.async {
             self.anchor = nil
+            self.wantsAnchorNow = false
             self.lastCandidate = nil
             self.stableCount = 0
             self.movedCandidate = nil
@@ -267,7 +272,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
             // Valid means: it came from a real outline, and the best outline in view right now
             // is in the same place.
             var valid = false
-            if let anchor, anchorFromOutline, let best = detection.screens.first {
+            if let anchor, anchorFromOutline, let best = detection.screens.first(where: \.hasText) {
                 let projected = anchor.corners.compactMap { geometry.project($0) }
                 if projected.count == 4 {
                     let outline = ScreenCandidate(topLeft: projected[0], topRight: projected[1],
@@ -281,10 +286,14 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         }
 
         if findScreen {
-            updateCandidate(detection.screens.first, frame: frame, geometry: geometry)
+            // Only an outline with labels inside it can be a touchscreen. Without that rule the
+            // biggest rectangle in view wins, and that is often a desk, a door or a window.
+            var candidate = detection.screens.first(where: \.hasText)
+            if candidate == nil, wantsAnchorNow, !forcedAnchorNeedsText { candidate = detection.screens.first }
+            updateCandidate(candidate, centerText: detection.centerText, frame: frame, geometry: geometry)
         } else if trackScreen, detection.fingertip == nil {
             // Only while no hand is in view: a hand hides edges and gives misleading outlines.
-            followScreen(detection.screens, frame: frame, geometry: geometry)
+            followScreen(detection.screens.filter(\.hasText), frame: frame, geometry: geometry)
         }
 
         var fingerState: FingerState?
@@ -361,7 +370,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         }
     }
 
-    private func updateCandidate(_ candidate: ScreenCandidate?, frame: ARFrame, geometry: FrameGeometry) {
+    private func updateCandidate(_ candidate: ScreenCandidate?, centerText: Int, frame: ARFrame, geometry: FrameGeometry) {
         if let candidate {
             if let last = lastCandidate, candidate.maxCornerDistance(to: last) < 0.025 {
                 stableCount += 1
@@ -381,6 +390,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         // The same outline has to hold still for about half a second before it is trusted.
         let stableEnough = autoAnchor && stableCount >= 7
         guard stableEnough || wantsAnchorNow else { return }
+        // Asked to anchor to the middle of the view, but there is nothing to read there yet: keep waiting.
+        if !stableEnough, forcedAnchorNeedsText, lastCandidate == nil, centerText < 3 { return }
         let forced = wantsAnchorNow
         wantsAnchorNow = false
 

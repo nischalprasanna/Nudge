@@ -48,7 +48,7 @@ This is a hackathon prototype. Nothing in it has been clinically validated or ce
 
 ### The pieces
 
-- **Finding the screen.** Apple's Vision framework proposes rectangles; Nudge keeps the one that most tightly contains text, since a control panel is a rectangle full of labels. Its corners are placed in 3D with ARKit, on a plane fitted through 25 measured points, so button positions stay correct while the phone moves.
+- **Finding the screen.** Apple's Vision framework proposes rectangles; Nudge keeps the one that most tightly contains text, since a control panel is a rectangle full of labels, and ignores rectangles with no text in them. Its corners are placed in 3D with ARKit, on a plane fitted through 25 measured points, so button positions stay correct while the phone moves.
 - **Reading it.** A high-resolution still is flattened to a straight-on view and read with Vision text recognition on the phone. Keypad rows are split into separate buttons and two-line names ("TIME" over "COOK") are joined.
 - **Planning.** The planner is asked for one step at a time and is called again after every press with a fresh reading. That is what lets it notice a wrong press ("That opened Defrost; press Stop/Clear") instead of following a plan that no longer matches the screen.
 - **Tracking the finger.** Vision's hand tracker gives the index fingertip. LiDAR depth turns it into a 3D point, which is dropped straight down onto the screen plane, so the reported position is where the finger will land rather than where it appears from the camera's angle. When the hand hides the fingertip, a second tracker finds the part of the hand nearest the glass from depth alone.
@@ -86,7 +86,7 @@ This table reflects our reading of the published descriptions of those systems, 
 - **Finger tracking is the weakest part.** If the hand hides the fingertip from the camera, tracking drops out. The LiDAR fallback has not been tried on real data yet. Holding the phone higher, so it looks down at the hand, helps.
 - **Depth near the glass.** LiDAR is accurate to roughly a centimetre at this range, so Nudge cannot tell a finger 2 mm above the screen from one touching it.
 - **Light.** Hand tracking failed often in a dim room and worked with the lights on.
-- **Icon-only screens.** Buttons without text depend on the cloud model estimating a position from a picture, which is less precise than a measured label.
+- **Icon-only screens.** Nudge only accepts something as a touchscreen if it can see at least three pieces of text on it; without that rule it locked onto desks and other plain rectangles. A screen made up only of icons is therefore not found at present.
 - **Framing.** If the camera is too close to see the panel's edges, Nudge can lock onto a smaller box inside it.
 - **Speed.** Each step takes about 2 seconds to plan and 2 more to confirm the screen has settled.
 - **Testing so far** has been on a photo of a microwave panel on a laptop and on a phone screen, not on a real appliance.

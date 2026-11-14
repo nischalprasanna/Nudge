@@ -9,6 +9,9 @@ struct ScreenCandidate {
     var bottomRight: CGPoint
     var bottomLeft: CGPoint
     var confidence: Float
+    /// At least three pieces of text sit inside it. A control panel is a rectangle full of
+    /// labels; a desk, a door or a window is a rectangle without them.
+    var hasText = false
 
     var corners: [CGPoint] { [topLeft, topRight, bottomRight, bottomLeft] }
 
@@ -29,7 +32,7 @@ struct ScreenCandidate {
         }
         return ScreenCandidate(topLeft: mean { $0.topLeft }, topRight: mean { $0.topRight },
                                bottomRight: mean { $0.bottomRight }, bottomLeft: mean { $0.bottomLeft },
-                               confidence: first.confidence)
+                               confidence: first.confidence, hasText: first.hasText)
     }
 
     /// Fallback when no outline is detected: the middle of what the user is pointing at.
@@ -78,9 +81,10 @@ final class FrameDetectors {
     }()
 
     /// `screens` holds every outline found, best first. `handBox` is where a hand is in view
-    /// (raw image coordinates), whether or not its fingertip can be made out.
+    /// (raw image coordinates), whether or not its fingertip can be made out. `centerText` is
+    /// how many pieces of text sit in the middle of the view.
     func detect(pixelBuffer: CVPixelBuffer, wantScreen: Bool)
-        -> (fingertip: FingertipDetection?, handBox: CGRect?, screens: [ScreenCandidate]) {
+        -> (fingertip: FingertipDetection?, handBox: CGRect?, screens: [ScreenCandidate], centerText: Int) {
         // .right turns the landscape camera image upright for a phone held in portrait.
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right, options: [:])
         var requests: [VNRequest] = [handRequest]
@@ -91,9 +95,16 @@ final class FrameDetectors {
         do {
             try handler.perform(requests)
         } catch {
-            return (nil, nil, [])
+            return (nil, nil, [], 0)
         }
-        return (fingertip(), handBox(), wantScreen ? screens() : [])
+        return (fingertip(), handBox(), wantScreen ? screens() : [], wantScreen ? centerText() : 0)
+    }
+
+    /// Text boxes inside the area that `ScreenCandidate.centerOfView` covers.
+    private func centerText() -> Int {
+        (textRequest.results ?? []).filter {
+            (0.15...0.85).contains($0.boundingBox.midX) && (0.30...0.70).contains($0.boundingBox.midY)
+        }.count
     }
 
     /// The area covered by the hand joints the tracker is reasonably sure of.
@@ -196,7 +207,7 @@ final class FrameDetectors {
                                    topRight: FrameGeometry.raw(fromVisionPortrait: o.topRight),
                                    bottomRight: FrameGeometry.raw(fromVisionPortrait: o.bottomRight),
                                    bottomLeft: FrameGeometry.raw(fromVisionPortrait: o.bottomLeft),
-                                   confidence: o.confidence)
+                                   confidence: o.confidence, hasText: item.text > 0)
         }
     }
 }
