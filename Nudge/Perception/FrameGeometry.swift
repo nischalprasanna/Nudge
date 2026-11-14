@@ -78,7 +78,8 @@ enum DepthSampler {
     /// Returns the depth in metres at the given percentile of trustworthy samples in a small
     /// window around a raw image point. A low percentile prefers the nearest surface, which is
     /// what you want for a fingertip in front of a screen. Nil when there is no usable depth.
-    static func depth(in depthData: ARDepthData, atRaw p: CGPoint, radius: Int, percentile: Float) -> Float? {
+    static func depth(in depthData: ARDepthData, atRaw p: CGPoint, radius: Int, percentile: Float,
+                      minimumConfidence: UInt8 = 1) -> Float? {
         let map = depthData.depthMap
         guard CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32 else { return nil }
         CVPixelBufferLockBaseAddress(map, .readOnly)
@@ -116,7 +117,7 @@ enum DepthSampler {
                 let d = row[x]
                 guard d.isFinite, d > 0.05, d < 3 else { continue }
                 // 0 = low, 1 = medium, 2 = high confidence.
-                if let confidenceRow, confidenceRow[x] < 1 { continue }
+                if let confidenceRow, confidenceRow[x] < minimumConfidence { continue }
                 samples.append(d)
             }
         }

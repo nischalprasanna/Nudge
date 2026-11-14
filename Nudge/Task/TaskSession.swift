@@ -139,7 +139,7 @@ final class TaskSession: ObservableObject {
 
         // 2. Read it.
         phase = .reading
-        await speaker.sayAndWait("Found the screen. Reading it.")
+        await speaker.sayAndWait("Found it.")
         guard var current = await readScreen() else { return }
         if await stopIfPayment(current.reading) { return }
 
@@ -147,8 +147,7 @@ final class TaskSession: ObservableObject {
         var spokenGoal = typedGoal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         if spokenGoal.isEmpty {
             phase = .listening
-            let count = current.reading.elements.count
-            spokenGoal = await ask("I can read \(count) labels. What would you like to do?") ?? ""
+            spokenGoal = await ask("What would you like to do?") ?? ""
             if spokenGoal.isEmpty, !Task.isCancelled {
                 spokenGoal = await ask("I didn't catch that. What would you like to do?") ?? ""
             }
@@ -240,6 +239,8 @@ final class TaskSession: ObservableObject {
                 if Task.isCancelled { return }
 
                 phase = .guiding
+                // Explain the hand-away step once; after that a single word is enough.
+                guidance.tapPhrase = history.isEmpty ? "Tap, then move your hand away." : "Tap."
                 guard await guide(to: target) else {
                     if !Task.isCancelled {
                         tones.playError()
@@ -268,7 +269,7 @@ final class TaskSession: ObservableObject {
             if Task.isCancelled { return nil }
             if let result = await pipeline.readScreenNow() { return result }
             if attempt == 0 || attempt == 2 {
-                await speaker.sayAndWait("I can't see the whole screen. Move the phone back a little and keep your hand out of the way.")
+                await speaker.sayAndWait("Move the phone back a little.")
             }
             try? await Task.sleep(nanoseconds: 1_200_000_000)
         }

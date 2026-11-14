@@ -75,6 +75,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     private var anchorFromOutline = false
     private var movedCandidate: ScreenCandidate?
     private var movedCount = 0
+    private var stableRun: [ScreenCandidate] = []
     private var readCompletions: [(ScreenReading?, CGImage?) -> Void] = []
 
     // MARK: Lifecycle
@@ -121,6 +122,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
             self.stableCount = 0
             self.movedCandidate = nil
             self.movedCount = 0
+            self.stableRun = []
             self.resetSmoothing()
             DispatchQueue.main.async {
                 self.isAnchored = false
@@ -223,9 +225,10 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         lastFrameTime = frame.timestamp
 
         let findScreen = anchor == nil && (wantsAnchorNow || frameIndex % 3 == 0)
-        // Once anchored, re-check the outline a few times a second so the anchor follows
-        // small drift, and follows the screen if it is moved.
-        let trackScreen = anchor != nil && anchorFromOutline && frameIndex % 10 == 0
+        // Once anchored, the outline is left alone so button positions stay put. It is only
+        // re-checked (a few times a second, and never while guiding to a button) to notice
+        // that the device itself has been moved.
+        let trackScreen = anchor != nil && anchorFromOutline && targetUV == nil && frameIndex % 15 == 0
         let detection = detectors.detect(pixelBuffer: frame.capturedImage, wantScreen: findScreen || trackScreen)
 
         if findScreen {
@@ -276,23 +279,29 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
 
     private func updateCandidate(_ candidate: ScreenCandidate?, frame: ARFrame, geometry: FrameGeometry) {
         if let candidate {
-            if let last = lastCandidate, candidate.maxCornerDistance(to: last) < 0.03 {
+            if let last = lastCandidate, candidate.maxCornerDistance(to: last) < 0.025 {
                 stableCount += 1
+                stableRun.append(candidate)
+                if stableRun.count > 8 { stableRun.removeFirst() }
             } else {
                 stableCount = 1
+                stableRun = [candidate]
             }
             lastCandidate = candidate
         } else {
             stableCount = 0
             lastCandidate = nil
+            stableRun = []
         }
 
-        let stableEnough = autoAnchor && stableCount >= 5
+        // The same outline has to hold still for about half a second before it is trusted.
+        let stableEnough = autoAnchor && stableCount >= 7
         guard stableEnough || wantsAnchorNow else { return }
         let forced = wantsAnchorNow
         wantsAnchorNow = false
 
-        let outline = lastCandidate ?? .centerOfView
+        // Average the recent sightings so one noisy frame does not skew the outline.
+        let outline = ScreenCandidate.average(stableRun) ?? lastCandidate ?? .centerOfView
         guard let newAnchor = makeAnchor(from: outline, frame: frame, geometry: geometry) else {
             stableCount = 0
             if forced { publishStatus("Could not measure the surface. Hold steady about 40 centimetres away and try again.") }
@@ -321,55 +330,38 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         }
     }
 
-    /// Keeps the anchor on the screen. Small drift is corrected straight away; a large move
-    /// (someone shifted the device) is followed once the new outline has held still.
+    /// Notices when the device has been moved and re-anchors to it. Small differences are
+    /// deliberately ignored: adjusting the outline for every wobble made it flicker and shifted
+    /// the buttons. Only a clear move, seen the same way several times in a row, is followed.
     private func followScreen(_ candidates: [ScreenCandidate], frame: ARFrame, geometry: FrameGeometry) {
-        guard let current = anchor else { return }
+        func reset() {
+            movedCandidate = nil
+            movedCount = 0
+        }
+        guard let current = anchor, let best = candidates.first else { return reset() }
         let projected = current.corners.compactMap { geometry.project($0) }
-        guard projected.count == 4 else { return }
+        guard projected.count == 4 else { return reset() }
         let currentOutline = ScreenCandidate(topLeft: projected[0], topRight: projected[1],
                                              bottomRight: projected[2], bottomLeft: projected[3], confidence: 1)
-        guard let nearest = candidates.min(by: {
-            $0.maxCornerDistance(to: currentOutline) < $1.maxCornerDistance(to: currentOutline)
-        }) else {
-            movedCandidate = nil
-            movedCount = 0
-            return
-        }
 
-        let offset = nearest.maxCornerDistance(to: currentOutline)
-        // Close enough already: leave it alone so button positions do not jitter.
-        guard offset > 0.025 else {
-            movedCandidate = nil
-            movedCount = 0
-            return
-        }
-        // Only follow an outline that is physically the same size as the anchored screen.
-        guard let fresh = makeAnchor(from: nearest, frame: frame, geometry: geometry),
-              abs(fresh.width - current.width) / current.width < 0.2,
-              abs(fresh.height - current.height) / current.height < 0.2 else {
-            movedCandidate = nil
-            movedCount = 0
-            return
-        }
+        // Still roughly where it was anchored: nothing to do.
+        guard best.maxCornerDistance(to: currentOutline) > 0.10 else { return reset() }
 
-        if offset < 0.08 {
-            movedCandidate = nil
-            movedCount = 0
-            adopt(fresh, status: nil)
-            return
-        }
-        if let last = movedCandidate, nearest.maxCornerDistance(to: last) < 0.03 {
+        if let last = movedCandidate, best.maxCornerDistance(to: last) < 0.025 {
             movedCount += 1
         } else {
             movedCount = 1
         }
-        movedCandidate = nearest
-        if movedCount >= 3 {
-            movedCandidate = nil
-            movedCount = 0
-            adopt(fresh, status: "The screen moved. Following it.")
-        }
+        movedCandidate = best
+        guard movedCount >= 4 else { return }
+
+        // Only follow an outline that is physically the same size as the anchored screen,
+        // so the anchor cannot jump to some other rectangle in view.
+        reset()
+        guard let fresh = makeAnchor(from: best, frame: frame, geometry: geometry),
+              abs(fresh.width - current.width) / current.width < 0.15,
+              abs(fresh.height - current.height) / current.height < 0.15 else { return }
+        adopt(fresh, status: "The screen moved. Following it.")
     }
 
     /// Measures the screen plane from points just inside the outline, then finds where the
@@ -463,26 +455,36 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         var hover: Float?
         var method = FingerState.Method.ray
 
+        let ray = geometry.ray(throughRaw: tip.point)
+        let rayHit = anchor.intersect(rayOrigin: ray.origin, direction: ray.direction)
+
         // Preferred: real 3D fingertip from LiDAR, dropped straight down onto the glass.
         // This removes parallax, so the reported spot is where the finger will actually land.
+        // The nearest depth in a small window is used, because the window also covers the
+        // screen behind the finger and the fingertip's edges come back with low confidence.
         if let depthData = frame.sceneDepth,
-           let depth = DepthSampler.depth(in: depthData, atRaw: tip.point, radius: 1, percentile: 0.2) {
+           let depth = DepthSampler.depth(in: depthData, atRaw: tip.point, radius: 2,
+                                          percentile: 0.08, minimumConfidence: 0) {
             let backOfFinger = geometry.unproject(raw: tip.point, depth: depth)
             let located = anchor.locate(backOfFinger)
             let padHeight = located.height - fingerThickness
-            // Ignore readings that put the finger well behind the glass or implausibly far in front.
-            if padHeight > -0.03, padHeight < 0.30 {
+            if padHeight > 0.004, padHeight < 0.30 {
                 uv = located.uv
-                hover = max(0, padHeight)
+                hover = padHeight
+                method = .lidar
+            } else if padHeight <= 0.004, padHeight > -0.04, let rayHit {
+                // Depth says the fingertip is at the glass: it is touching, so there is no parallax.
+                uv = anchor.locate(rayHit).uv
+                hover = 0
                 method = .lidar
             }
         }
 
         // Fallback: where the camera's line of sight through the fingertip meets the glass.
+        // Height above the glass is unknown here.
         if uv == nil {
-            let ray = geometry.ray(throughRaw: tip.point)
-            guard let hit = anchor.intersect(rayOrigin: ray.origin, direction: ray.direction) else { return nil }
-            uv = anchor.locate(hit).uv
+            guard let rayHit else { return nil }
+            uv = anchor.locate(rayHit).uv
         }
         guard let uv else { return nil }
 

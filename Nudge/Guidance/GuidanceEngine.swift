@@ -13,6 +13,9 @@ struct FeedbackChannels: Equatable {
 ///
 /// `update(finger:)` is called for every camera frame (well above 15 times a second) and never
 /// waits on anything, so guidance keeps flowing regardless of network or speech.
+///
+/// Division of labour: the beeps carry the continuous guidance. The voice says very little:
+/// one direction word when the direction changes, "closer" or "lift" for height, and "tap".
 final class GuidanceEngine {
     struct Target {
         /// Centre of the button on the screen, normalized 0...1, origin top-left.
@@ -25,17 +28,21 @@ final class GuidanceEngine {
     enum Phase: Equatable {
         case idle
         case seeking
-        /// The finger has rested on the target long enough; "tap now" has been given.
+        /// Over the button but still too far from the glass to tap.
+        case aboveTarget
+        /// Over the button and close to the glass; "tap" has been given.
         case onTarget
     }
 
     struct Snapshot {
         var phase: Phase = .idle
-        /// True once the finger has reached the target at least once for the current target.
+        /// True once "tap" has been given at least once for the current target.
         var hasArrived = false
         var distance: Float?
         var lastSeen: TimeInterval = 0
     }
+
+    private enum Axis { case horizontal, vertical }
 
     private struct State {
         var target: Target?
@@ -43,11 +50,14 @@ final class GuidanceEngine {
         var screenHeight: Float = 0.1
         var snapshot = Snapshot()
         var dwellStart: TimeInterval?
+        var aboveSince: TimeInterval?
         var lastVoiceTime: TimeInterval = 0
         var lastVoiceText = ""
+        var lastHeightPrompt: TimeInterval = 0
         var lastMissingPrompt: TimeInterval = 0
         var startedAt: TimeInterval = 0
         var lastApproachPulse: TimeInterval = 0
+        var axis: Axis?
     }
 
     private let tones: ToneEngine
@@ -57,6 +67,12 @@ final class GuidanceEngine {
     var channels = FeedbackChannels()
     /// Haptic cues for the Watch. Called from the camera thread.
     var onHaptic: ((HapticCommand) -> Void)?
+    /// What is said when the finger is on the button and close enough to press it.
+    var tapPhrase = "Tap."
+    /// The finger pad must be within this height of the glass before "tap" is given (metres).
+    var tapHeight: Float = 0.035
+    /// Below this height while still far from the button, the user is told to lift (metres).
+    var dragHeight: Float = 0.005
 
     init(tones: ToneEngine, speaker: Speaker) {
         self.tones = tones
@@ -76,6 +92,8 @@ final class GuidanceEngine {
             $0.snapshot.phase = .seeking
             $0.startedAt = now
             $0.lastMissingPrompt = now
+            // Give the "Press ..." sentence a moment before any direction word.
+            $0.lastVoiceTime = now
         }
     }
 
@@ -87,7 +105,7 @@ final class GuidanceEngine {
         tones.silence()
     }
 
-    /// Feed the latest fingertip position. `finger.timestamp` uses the same clock as system uptime.
+    /// Feed the latest fingertip position.
     func update(finger: FingerState?) {
         enum Cue {
             case none
@@ -99,6 +117,9 @@ final class GuidanceEngine {
         var say: String?
         var haptic: HapticCommand?
         let now = ProcessInfo.processInfo.systemUptime
+        let tapPhrase = self.tapPhrase
+        let tapHeight = self.tapHeight
+        let dragHeight = self.dragHeight
 
         lock.withLockUnchecked { state in
             guard let target = state.target else { return }
@@ -107,13 +128,14 @@ final class GuidanceEngine {
                 cue = .silent
                 state.snapshot.distance = nil
                 state.dwellStart = nil
-                if state.snapshot.phase == .onTarget { state.snapshot.phase = .seeking }
-                // Only prompt if the finger has been missing for a while, and not too often.
+                state.aboveSince = nil
+                if state.snapshot.phase != .seeking { state.snapshot.phase = .seeking }
+                // Only mention it if the finger has been missing for a while, and rarely.
                 if !state.snapshot.hasArrived,
                    now - max(state.snapshot.lastSeen, state.startedAt) > 3,
-                   now - state.lastMissingPrompt > 6 {
+                   now - state.lastMissingPrompt > 8 {
                     state.lastMissingPrompt = now
-                    say = "I can't see your finger. Point with one finger in front of the screen."
+                    say = "I can't see your finger."
                 }
                 return
             }
@@ -125,26 +147,51 @@ final class GuidanceEngine {
             let distance = (dx * dx + dy * dy).squareRoot()
             state.snapshot.distance = distance
 
-            let wasOnTarget = state.snapshot.phase == .onTarget
-            // A little slack once on target, so small tremors do not flip the state.
-            let inside = distance < (wasOnTarget ? target.radius * 1.5 : target.radius)
+            let wasOver = state.snapshot.phase == .onTarget || state.snapshot.phase == .aboveTarget
+            // A little slack once over the button, so small tremors do not flip the state.
+            let over = distance < (wasOver ? target.radius * 1.5 : target.radius)
 
-            if inside {
-                cue = .onTarget
-                if wasOnTarget { return }
-                if state.dwellStart == nil { state.dwellStart = now }
-                if now - (state.dwellStart ?? now) >= 0.3 {
-                    state.snapshot.phase = .onTarget
-                    state.snapshot.hasArrived = true
-                    state.lastVoiceTime = now
-                    state.lastVoiceText = "tap"
-                    say = "Tap now, then move your hand away."
-                    haptic = .onTarget
+            if over {
+                // Over the button. Is the finger close enough to the glass to press it?
+                // If the height is unknown (no depth reading), assume it is.
+                var near = finger.hoverMeters.map { $0 <= tapHeight } ?? true
+                if !near {
+                    if state.aboveSince == nil { state.aboveSince = now }
+                    // Safety net: if the height reading never comes down, do not leave the user stuck.
+                    if now - (state.aboveSince ?? now) > 5 { near = true }
+                } else {
+                    state.aboveSince = nil
+                }
+
+                if near {
+                    cue = .onTarget
+                    if state.snapshot.phase == .onTarget { return }
+                    if state.dwellStart == nil { state.dwellStart = now }
+                    if now - (state.dwellStart ?? now) >= 0.25 {
+                        state.snapshot.phase = .onTarget
+                        state.snapshot.hasArrived = true
+                        state.lastVoiceTime = now
+                        state.lastVoiceText = "tap"
+                        say = tapPhrase
+                        haptic = .onTarget
+                    }
+                } else {
+                    // Right spot, too high: fast centred beeps, and one word now and then.
+                    state.dwellStart = nil
+                    state.snapshot.phase = .aboveTarget
+                    cue = .seek(pan: 0, rise: 0, closeness: 1)
+                    if now - state.lastHeightPrompt > 2.5 {
+                        state.lastHeightPrompt = now
+                        state.lastVoiceTime = now
+                        state.lastVoiceText = "closer"
+                        say = "Closer."
+                    }
                 }
                 return
             }
 
             state.dwellStart = nil
+            state.aboveSince = nil
             state.snapshot.phase = .seeking
             let closeness = 1 - min(distance / 0.12, 1)
             cue = .seek(pan: dx / 0.06, rise: -dy / 0.06, closeness: closeness)
@@ -156,20 +203,41 @@ final class GuidanceEngine {
                 haptic = .approach
             }
 
-            // Spoken direction: when it changes, or as a reminder every couple of seconds.
-            var text = Self.direction(dx: dx, dy: dy)
-            if let hover = finger.hoverMeters {
-                if hover < 0.006, distance > target.radius * 2 {
-                    text = "Lift your finger a little. " + text
-                } else if hover > 0.09 {
-                    text = "Closer to the screen. " + text
-                }
-            }
-            let sinceLast = now - state.lastVoiceTime
-            if (text != state.lastVoiceText && sinceLast > 0.9) || sinceLast > 2.2 {
+            // Dragging along the glass while still away from the button would press other buttons.
+            if let hover = finger.hoverMeters, hover < dragHeight, distance > target.radius * 2.5,
+               now - state.lastHeightPrompt > 4 {
+                state.lastHeightPrompt = now
                 state.lastVoiceTime = now
-                state.lastVoiceText = text
-                say = text
+                state.lastVoiceText = "lift"
+                say = "Lift."
+                return
+            }
+
+            // One direction word. Stick with the current axis unless the other is clearly larger,
+            // so the word does not flip back and forth on a diagonal.
+            let ax = abs(dx)
+            let ay = abs(dy)
+            var axis = state.axis ?? (ax >= ay ? .horizontal : .vertical)
+            if axis == .horizontal, ay > ax * 1.6 { axis = .vertical }
+            if axis == .vertical, ax > ay * 1.6 { axis = .horizontal }
+            // Once one direction is nearly lined up, hand over to the other.
+            if axis == .horizontal, ax < target.radius * 0.7, ay >= target.radius * 0.7 { axis = .vertical }
+            if axis == .vertical, ay < target.radius * 0.7, ax >= target.radius * 0.7 { axis = .horizontal }
+            state.axis = axis
+
+            let word: String
+            switch axis {
+            case .horizontal: word = dx > 0 ? "Right." : "Left."
+            case .vertical: word = dy > 0 ? "Down." : "Up."
+            }
+
+            // Speak when the word changes (not more than about once a second),
+            // or as an occasional reminder if nothing has changed.
+            let sinceLast = now - state.lastVoiceTime
+            if (word != state.lastVoiceText && sinceLast > 1.1) || sinceLast > 4.5 {
+                state.lastVoiceTime = now
+                state.lastVoiceText = word
+                say = word
             }
         }
 
@@ -183,26 +251,5 @@ final class GuidanceEngine {
         }
         if channels.voice, let say { speaker.say(say) }
         if channels.watch, let haptic { onHaptic?(haptic) }
-    }
-
-    /// Short spoken direction such as "left", "up a little" or "down and right".
-    static func direction(dx: Float, dy: Float) -> String {
-        let horizontal = dx > 0 ? "right" : "left"
-        let vertical = dy > 0 ? "down" : "up"
-        let ax = abs(dx)
-        let ay = abs(dy)
-        let distance = max(ax, ay)
-
-        let words: String
-        if ax > ay * 2 {
-            words = horizontal
-        } else if ay > ax * 2 {
-            words = vertical
-        } else {
-            words = "\(vertical) and \(horizontal)"
-        }
-        if distance < 0.015 { return "\(words), slightly" }
-        if distance < 0.04 { return "\(words) a little" }
-        return words
     }
 }
