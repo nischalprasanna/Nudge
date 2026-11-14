@@ -4,6 +4,8 @@ import SwiftUI
 /// and fingertip, live fingertip numbers, and the text read from the screen.
 struct PerceptionTestView: View {
     @StateObject private var pipeline = PerceptionPipeline()
+    @State private var markerMessage = ""
+    @AppStorage("marker.on") private var markerOn = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -11,6 +13,11 @@ struct PerceptionTestView: View {
                 ARPreview(session: pipeline.session)
                     .accessibilityHidden(true)
                 OverlayCanvas(overlay: pipeline.overlay, imageAspect: pipeline.portraitAspect)
+                    .accessibilityHidden(true)
+                // Where to hold the fingernail marker when teaching Nudge its colour.
+                Circle()
+                    .strokeBorder(Theme.signal, lineWidth: 3)
+                    .frame(width: 44, height: 44)
                     .accessibilityHidden(true)
             }
             .frame(maxHeight: .infinity)
@@ -27,6 +34,26 @@ struct PerceptionTestView: View {
                 Text(infoText)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+
+                // Fingernail marker: hold it in the yellow circle and save its colour.
+                Text(markerMessage.isEmpty ? pipeline.markerInfo : markerMessage)
+                    .font(.footnote.weight(.semibold))
+                HStack(spacing: 12) {
+                    Button("Use colour in circle") {
+                        pipeline.learnMarkerColor { message in
+                            markerMessage = message
+                            UIAccessibility.post(notification: .announcement, argument: message)
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { markerMessage = "" }
+                        }
+                    }
+                    .accessibilityHint("Hold the marker on your fingernail in the middle of the camera view, then press this")
+                    Button(markerOn ? "Marker off" : "Marker on") {
+                        markerOn.toggle()
+                        pipeline.loadMarkerSetting()
+                    }
+                    .accessibilityHint("Switches fingernail marker tracking on or off")
+                }
+                .buttonStyle(.bordered)
 
                 HStack(spacing: 12) {
                     Button(pipeline.isAnchored ? "Re-anchor" : "Anchor now") { pipeline.anchorNow() }

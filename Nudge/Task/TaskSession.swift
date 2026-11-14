@@ -523,7 +523,7 @@ final class TaskSession: ObservableObject {
                 return true
             }
             let found = pipeline.trackingCounts
-            DebugLog.add(String(format: "guide: \"%@\" %@ after %.1f s. Finger found by hand tracker in %d frames, by screen change in %d, not found in %d",
+            DebugLog.add(String(format: "guide: \"%@\" %@ after %.1f s. Finger found by marker or hand tracker in %d frames, by screen change in %d, not found in %d",
                                 stop.name, result == .pressed ? "pressed" : (result == .interrupted ? "interrupted" : "gave up"),
                                 Date().timeIntervalSince(guideStarted), found.tracker, found.outline, found.missing))
             switch result {

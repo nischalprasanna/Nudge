@@ -35,6 +35,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     @Published private(set) var framesPerSecond: Double = 0
     @Published private(set) var portraitAspect: CGFloat = 0.75
     @Published private(set) var screenSizeText = ""
+    /// Whether the fingernail marker is in use and in view, for the test screen.
+    @Published private(set) var markerInfo = "Marker: off"
     /// What the screen search can see right now, for the line under the camera view.
     @Published private(set) var searchInfo = ""
     /// Physical size of the anchored screen in metres.
@@ -93,6 +95,16 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     /// Frames in which the finger came from the hand tracker, from the screen-change finder, or
     /// was not found, since the current target was set.
     private let counts = OSAllocatedUnfairLock(initialState: (tracker: 0, outline: 0, missing: 0))
+    // Fingernail marker. When it is switched on, it is the only thing used to place the finger.
+    private let markerFinder = MarkerFinder()
+    private var markerOn = false
+    private var markerColor: MarkerFinder.Color?
+    /// Marker-coloured things that were on the screen with no hand in view (a green Start key,
+    /// say), as positions on the screen. They are not the marker.
+    private var markerDecoys: [CGPoint] = []
+    private var lastMarkerUV: CGPoint?
+    private var wantsMarkerColor: ((MarkerFinder.Color?) -> Void)?
+    private var lastMarkerInfo = ""
     private var pendingExpansion: (up: Float, down: Float, sides: Float, done: (Bool) -> Void)?
     private var anchorBeforeExpansion: ScreenAnchor?
     private var wantsReadFromNextFrame = false
@@ -120,6 +132,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     // MARK: Lifecycle
 
     func start() {
+        loadMarkerSetting()
         guard ARWorldTrackingConfiguration.isSupported else {
             status = "This device does not support AR tracking"
             return
@@ -244,6 +257,49 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     }
 
     /// Marks a point on the screen (normalized) to highlight in the overlay. Nil clears it.
+    /// Reads the marker setting saved on the phone. Call after it changes.
+    func loadMarkerSetting() {
+        let defaults = UserDefaults.standard
+        let on = defaults.bool(forKey: "marker.on")
+        var color: MarkerFinder.Color?
+        if defaults.object(forKey: "marker.cb") != nil {
+            color = MarkerFinder.Color(cb: UInt8(clamping: defaults.integer(forKey: "marker.cb")),
+                                       cr: UInt8(clamping: defaults.integer(forKey: "marker.cr")))
+        }
+        visionQueue.async {
+            self.markerOn = on && color != nil
+            self.markerColor = color
+            self.lastMarkerUV = nil
+        }
+    }
+
+    /// Takes the colour in the middle of the camera's view as the marker colour and saves it.
+    /// The completion gets a sentence saying how it went.
+    func learnMarkerColor(completion: @escaping (String) -> Void) {
+        visionQueue.async {
+            self.wantsMarkerColor = { color in
+                var message = "I couldn't read the colour. Try again."
+                if let color {
+                    if color.strength < 22 {
+                        message = "That colour is too close to grey or white to pick out. Use something bright: blue, pink, orange or green."
+                    } else if color.looksLikeSkin {
+                        message = "That colour is too close to skin. Use something that stands out from your finger."
+                    } else {
+                        let defaults = UserDefaults.standard
+                        defaults.set(Int(color.cb), forKey: "marker.cb")
+                        defaults.set(Int(color.cr), forKey: "marker.cr")
+                        defaults.set(true, forKey: "marker.on")
+                        message = "Marker colour saved. Tracking will follow the marker."
+                    }
+                }
+                DispatchQueue.main.async {
+                    self.loadMarkerSetting()
+                    completion(message)
+                }
+            }
+        }
+    }
+
     func setTarget(_ uv: CGPoint?) {
         if uv != nil { counts.withLock { $0 = (0, 0, 0) } }
         visionQueue.async { self.targetUV = uv }
@@ -430,7 +486,39 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                 }
             }
         }
-        if let anchor, usesScreenChangeFinder {
+        if let learn = wantsMarkerColor {
+            wantsMarkerColor = nil
+            learn(colourAtCentre(of: frame.capturedImage))
+        }
+        if markerOn, let color = markerColor {
+            // The marker is the only source when it is on. Mixing it with the other finders
+            // would make the position jump between them.
+            fingerState = nil
+            pointerInImage = nil
+            pointerEstimated = false
+            var info = "Marker: on, not in view"
+            if let seen = findMarker(frame.capturedImage, color: color, anchor: anchor, geometry: geometry) {
+                pointerInImage = seen.point
+                info = "Marker: in view (\(seen.count) samples)"
+                if let anchor {
+                    let tip = FingertipDetection(point: seen.point, confidence: 0.95, previousJoint: nil)
+                    if var located = locateFinger(tip, on: anchor, frame: frame, geometry: geometry) {
+                        located.method = .marker
+                        fingerState = located
+                        lastMarkerUV = located.uv
+                    }
+                }
+            }
+            if info != lastMarkerInfo {
+                lastMarkerInfo = info
+                DispatchQueue.main.async { self.markerInfo = info }
+            }
+        } else if lastMarkerInfo != "Marker: off" {
+            lastMarkerInfo = "Marker: off"
+            DispatchQueue.main.async { self.markerInfo = "Marker: off" }
+        }
+
+        if let anchor, usesScreenChangeFinder, !markerOn {
             if wantsReference {
                 wantsReference = false
                 captureReference(frame.capturedImage, anchor: anchor, geometry: geometry)
@@ -458,6 +546,16 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                     }
                 }
             }
+        }
+        if let anchor, markerOn, wantsReference, let color = markerColor {
+            // With no hand in view, note anything on the screen that is the marker's colour.
+            wantsReference = false
+            markerDecoys = markerBlobs(frame.capturedImage, color: color, anchor: anchor, geometry: geometry)
+                .compactMap { blob -> CGPoint? in
+                    let ray = geometry.ray(throughRaw: blob.point)
+                    guard let hit = anchor.intersect(rayOrigin: ray.origin, direction: ray.direction) else { return nil }
+                    return anchor.locate(hit).uv
+                }
         }
         if targetUV != nil {
             let source = fingerState?.method
@@ -824,6 +922,95 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         // Room for a fingertip the tracker could not make out, just beyond the joints it could.
         let pad = max(0.04, max(box.width, box.height) * 0.3)
         return box.insetBy(dx: -pad, dy: -pad)
+    }
+
+    // MARK: Fingernail marker
+
+    /// Patches of marker colour in the camera picture, as points in the raw image (normalized).
+    /// Only the area around the anchored screen is searched when there is one.
+    private func markerBlobs(_ pixelBuffer: CVPixelBuffer, color: MarkerFinder.Color, anchor: ScreenAnchor?,
+                             geometry: FrameGeometry) -> [(point: CGPoint, count: Int)] {
+        guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 2 else { return [] }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let lumaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+              let chromaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) else { return [] }
+        let lumaStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+        let chromaStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+
+        var minX = 0, minY = 0, maxX = width - 1, maxY = height - 1
+        if let anchor {
+            // The screen and a generous margin around it, as it appears in the picture now.
+            let margin: Float = 0.45
+            let corners = [anchor.world(u: -margin, v: -margin), anchor.world(u: 1 + margin, v: -margin),
+                           anchor.world(u: 1 + margin, v: 1 + margin), anchor.world(u: -margin, v: 1 + margin)]
+                .compactMap { geometry.project($0) }
+            if corners.count == 4 {
+                minX = max(0, Int((corners.map(\.x).min() ?? 0) * CGFloat(width)))
+                maxX = min(width - 1, Int((corners.map(\.x).max() ?? 1) * CGFloat(width)))
+                minY = max(0, Int((corners.map(\.y).min() ?? 0) * CGFloat(height)))
+                maxY = min(height - 1, Int((corners.map(\.y).max() ?? 1) * CGFloat(height)))
+            }
+        }
+        let blobs = markerFinder.blobs(minX: minX, minY: minY, maxX: maxX, maxY: maxY, step: 2, marker: color,
+                                       colour: { x, y in
+                                           let pair = chromaBase.advanced(by: y * chromaStride + x * 2)
+                                           return (pair.load(as: UInt8.self), pair.load(fromByteOffset: 1, as: UInt8.self))
+                                       },
+                                       luma: { x, y in lumaBase.load(fromByteOffset: (y * 2) * lumaStride + x * 2, as: UInt8.self) })
+        return blobs.map { (CGPoint(x: CGFloat(($0.x + 0.5) / Float(width)), y: CGFloat(($0.y + 0.5) / Float(height))), $0.count) }
+    }
+
+    /// The marker itself: the patch nearest where it was last seen, else the largest, leaving
+    /// out anything that was already on the screen before the hand came in.
+    private func findMarker(_ pixelBuffer: CVPixelBuffer, color: MarkerFinder.Color, anchor: ScreenAnchor?,
+                            geometry: FrameGeometry) -> (point: CGPoint, count: Int)? {
+        var candidates: [(point: CGPoint, count: Int, uv: CGPoint?)] = []
+        for blob in markerBlobs(pixelBuffer, color: color, anchor: anchor, geometry: geometry) {
+            var uv: CGPoint?
+            if let anchor {
+                let ray = geometry.ray(throughRaw: blob.point)
+                if let hit = anchor.intersect(rayOrigin: ray.origin, direction: ray.direction) { uv = anchor.locate(hit).uv }
+                if let uv, markerDecoys.contains(where: {
+                    hypot(Float($0.x - uv.x) * anchor.width, Float($0.y - uv.y) * anchor.height) < 0.012
+                }) { continue }
+            }
+            candidates.append((blob.point, blob.count, uv))
+        }
+        guard !candidates.isEmpty else { return nil }
+        if let anchor, let last = lastMarkerUV {
+            let near = candidates.filter { candidate in
+                guard let uv = candidate.uv else { return false }
+                return hypot(Float(uv.x - last.x) * anchor.width, Float(uv.y - last.y) * anchor.height) < 0.06
+            }
+            if let best = near.max(by: { $0.count < $1.count }) { return (best.point, best.count) }
+        }
+        let best = candidates.max(by: { $0.count < $1.count })!
+        return (best.point, best.count)
+    }
+
+    /// The typical colour of a small patch in the middle of the picture.
+    private func colourAtCentre(of pixelBuffer: CVPixelBuffer) -> MarkerFinder.Color? {
+        guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 2 else { return nil }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let chromaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) else { return nil }
+        let width = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
+        let height = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+        let reach = max(3, min(width, height) / 90)
+        var cbs: [UInt8] = [], crs: [UInt8] = []
+        for y in (height / 2 - reach)...(height / 2 + reach) {
+            for x in (width / 2 - reach)...(width / 2 + reach) {
+                cbs.append(chromaBase.load(fromByteOffset: y * stride + x * 2, as: UInt8.self))
+                crs.append(chromaBase.load(fromByteOffset: y * stride + x * 2 + 1, as: UInt8.self))
+            }
+        }
+        cbs.sort()
+        crs.sort()
+        return MarkerFinder.Color(cb: cbs[cbs.count / 2], cr: crs[crs.count / 2])
     }
 
     // MARK: Screen-change finder

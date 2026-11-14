@@ -12,6 +12,7 @@ struct SettingsView: View {
     @AppStorage("channel.voice") private var voice = true
     @AppStorage("channel.watch") private var watch = true
     @AppStorage("wornOnChest") private var wornOnChest = false
+    @AppStorage("marker.on") private var markerOn = false
 
     private var plannerName: String {
         CloudPlanner.fromConfiguredKeys()?.name ?? "Not set up (no key in this build)"
@@ -48,6 +49,19 @@ struct SettingsView: View {
                     Text("How you carry the phone")
                 } footer: {
                     Text("Turn this on when the phone is tucked into a shirt or hangs on a lanyard with its screen against you. During a task the screen switches off and ignores touches while it is covered, so your body cannot press Stop. Take the phone out to use the controls.")
+                }
+
+                Section {
+                    Toggle(isOn: $markerOn) {
+                        Label("Fingernail marker", systemImage: "circle.circle")
+                    }
+                    NavigationLink("Set the marker colour") {
+                        PerceptionTestView()
+                    }
+                } header: {
+                    Text("Finger tracking")
+                } footer: {
+                    Text("A small bright sticker or dab of colour on the nail of your pointing finger lets Nudge follow it exactly, even when only your fingertip is in view. Set the colour once: hold the marker in the yellow circle and press Use colour in circle. Pick a colour that is not on the appliance.")
                 }
 
                 Section("This phone") {
