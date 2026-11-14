@@ -49,7 +49,10 @@ Written overnight, Saturday 14 November. Everything here was decided without you
 - **My recommended order once the core loop works on a real appliance:** demo-safe mode (protects the demo), Watch haptics (already built), saved devices (makes the demo instant), then spatial audio. I'd describe the rest as planned rather than build them badly.
 - **What I assumed overnight:** that you would rather have a core loop that works than more untested features, so I added only the test log, which is small and cannot break anything.
 
-### 6. Is it acceptable that a picture of the screen can go to OpenAI?
+### 6. Is it acceptable that a picture of the screen can go to OpenAI? (Answered 14 Nov: yes)
+
+- **Outcome:** Nischal is fine with sending pictures when it improves accuracy. The rule against sending screens that may show personal information stays. As of this afternoon pictures are sent only when the planner asks for one, because from the phone they took 5 to 20+ seconds; that is a speed choice, not a privacy one. Original question follows.
+
 
 - **Why it matters:** the pitch says "private".
 - **What happens now:** button labels always go as text. A picture goes only when fewer than 8 labels can be read, and never when the labels include words like "password" or an @ sign. That check is basic.
