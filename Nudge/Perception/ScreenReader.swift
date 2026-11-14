@@ -76,13 +76,166 @@ final class ScreenReader {
             if !duplicate { kept.append(element) }
         }
 
-        let elements = Self.mergeStacked(kept, imageWidth: CGFloat(image.width), imageHeight: CGFloat(image.height))
+        var elements = Self.mergeStacked(kept, imageWidth: CGFloat(image.width), imageHeight: CGFloat(image.height))
+        elements = addKeys(to: elements, in: image)
 
         // Reading order: top to bottom in rows, then left to right.
         return elements.sorted { a, b in
             if abs(a.box.midY - b.box.midY) > 0.04 { return a.box.midY < b.box.midY }
             return a.box.midX < b.box.midX
         }
+    }
+
+    // MARK: Keys
+
+    /// Finds the keys of a keypad as boxes and makes sure each has a label.
+    ///
+    /// Text recognition is poor at a single digit standing alone inside a box: on a twelve-key
+    /// pad it typically returns three to six of them. So the key outlines are found as
+    /// rectangles, each unread key is read on its own, and digits still missing are filled in
+    /// from the ones that were read, since keypads are laid out 1 to 9 in rows with 0 beneath 8.
+    func addKeys(to elements: [ScreenElement], in image: CGImage) -> [ScreenElement] {
+        let keys = Self.keyBoxes(in: image)
+        guard keys.count >= 4 else { return elements }
+
+        // Start from what the text pass already found on each key.
+        var labels = [String](repeating: "", count: keys.count)
+        var used = Set<Int>()
+        for (index, element) in elements.enumerated() {
+            if let key = keys.firstIndex(where: { $0.contains(element.center) }) {
+                labels[key] = labels[key].isEmpty ? element.label : labels[key] + " " + element.label
+                used.insert(index)
+            }
+        }
+
+        // Read the remaining keys one at a time, at two sizes.
+        let unread = keys.indices.filter { labels[$0].isEmpty }
+        var found = [String](repeating: "", count: unread.count)
+        found.withUnsafeMutableBufferPointer { buffer in
+            let results = buffer
+            DispatchQueue.concurrentPerform(iterations: unread.count) { slot in
+                let box = keys[unread[slot]].insetBy(dx: keys[unread[slot]].width * 0.1, dy: keys[unread[slot]].height * 0.1)
+                let pixels = CGRect(x: box.minX * CGFloat(image.width), y: box.minY * CGFloat(image.height),
+                                    width: box.width * CGFloat(image.width), height: box.height * CGFloat(image.height)).integral
+                guard let crop = image.cropping(to: pixels) else { return }
+                for height in [120, 240] as [CGFloat] {
+                    let text = Self.readSingle(Self.resized(crop, toHeight: height))
+                    if !text.isEmpty {
+                        results[slot] = text
+                        break
+                    }
+                }
+            }
+        }
+        for (slot, key) in unread.enumerated() { labels[key] = found[slot] }
+
+        labels = Self.fillInDigits(labels, keys: keys)
+
+        var result = elements.enumerated().filter { !used.contains($0.offset) }.map(\.element)
+        for (key, label) in zip(keys, labels) where !label.isEmpty {
+            result.append(ScreenElement(label: label, box: key, confidence: 0.6, isButton: true))
+        }
+        return result
+    }
+
+    /// Outlines of same-sized buttons, normalized with the origin at the top-left.
+    static func keyBoxes(in image: CGImage) -> [CGRect] {
+        let request = VNDetectRectanglesRequest()
+        request.maximumObservations = 60
+        request.minimumSize = 0.06
+        request.minimumAspectRatio = 0.4
+        request.maximumAspectRatio = 1.0
+        request.quadratureTolerance = 20
+        request.minimumConfidence = 0.3
+        guard (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil,
+              let observations = request.results, observations.count >= 4 else { return [] }
+        let boxes = observations.map { o -> CGRect in
+            let b = o.boundingBox
+            return CGRect(x: b.minX, y: 1 - b.maxY, width: b.width, height: b.height)
+        }
+
+        // Keys are all about one size. Take the middle size as "a key" and drop everything
+        // far from it: the outline of the whole pad, the display, the loop of a "0".
+        let widths = boxes.map(\.width).sorted()
+        let heights = boxes.map(\.height).sorted()
+        let width = widths[widths.count / 2]
+        let height = heights[heights.count / 2]
+        let alike = boxes.filter {
+            $0.width > width * 0.65 && $0.width < width * 1.5 && $0.height > height * 0.65 && $0.height < height * 1.5
+        }
+
+        // The inner and outer edge of one key's border both come back; keep one box per key.
+        var keys: [CGRect] = []
+        for box in alike.sorted(by: { $0.width * $0.height < $1.width * $1.height }) {
+            let duplicate = keys.contains { hypot($0.midX - box.midX, $0.midY - box.midY) < min(width, height) * 0.5 }
+            if !duplicate { keys.append(box) }
+        }
+        return keys.count >= 4 ? keys : []
+    }
+
+    /// Fills in digits the reader missed, from those it got. Positions are worked out as rows
+    /// and columns of the key grid; a digit d belongs at row (d-1)/3, column (d-1)%3 of the
+    /// number block, and 0 sits under 8. Needs at least two digits that agree.
+    static func fillInDigits(_ input: [String], keys: [CGRect]) -> [String] {
+        var labels = input
+        guard let height = keys.map(\.height).sorted().dropFirst(keys.count / 2).first,
+              let width = keys.map(\.width).sorted().dropFirst(keys.count / 2).first else { return labels }
+
+        func index(of value: CGFloat, in centres: [CGFloat], step: CGFloat) -> Int {
+            // Rank among the distinct rows or columns.
+            var distinct: [CGFloat] = []
+            for centre in centres.sorted() where distinct.last.map({ centre - $0 > step * 0.5 }) ?? true {
+                distinct.append(centre)
+            }
+            return distinct.lastIndex(where: { value - $0 > -step * 0.5 }) ?? 0
+        }
+        let rows = keys.map { index(of: $0.midY, in: keys.map(\.midY), step: height) }
+        let columns = keys.map { index(of: $0.midX, in: keys.map(\.midX), step: width) }
+
+        // Each digit that was read votes for where the "1" key must be.
+        var votes: [SIMD2<Int>: Int] = [:]
+        for (key, label) in labels.enumerated() {
+            guard label.count == 1, let digit = Int(label), digit >= 1 else { continue }
+            votes[SIMD2(rows[key] - (digit - 1) / 3, columns[key] - (digit - 1) % 3), default: 0] += 1
+        }
+        guard let winner = votes.max(by: { $0.value < $1.value }), winner.value >= 2,
+              winner.value * 3 >= votes.values.reduce(0, +) * 2 else { return labels }
+        let origin = winner.key
+
+        for key in keys.indices {
+            let row = rows[key] - origin.x
+            let column = columns[key] - origin.y
+            // Only overwrite nothing, or a stray single character; never a word such as "Stop".
+            guard labels[key].count <= 1 else { continue }
+            if (0..<3).contains(row), (0..<3).contains(column) {
+                labels[key] = String(1 + row * 3 + column)
+            } else if row == 3, column == 1 {
+                labels[key] = "0"
+            }
+        }
+        return labels
+    }
+
+    private static func readSingle(_ image: CGImage) -> String {
+        let request = VNRecognizeTextRequest()
+        request.recognitionLevel = .accurate
+        request.usesLanguageCorrection = false
+        request.recognitionLanguages = ["en-US"]
+        request.minimumTextHeight = 0
+        guard (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil else { return "" }
+        let pieces = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
+        return pieces.joined(separator: " ").trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private static func resized(_ image: CGImage, toHeight target: CGFloat) -> CGImage {
+        let scale = target / CGFloat(max(image.height, 1))
+        let width = max(1, Int(CGFloat(image.width) * scale))
+        guard let context = CGContext(data: nil, width: width, height: Int(target), bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: CGColorSpaceCreateDeviceRGB(),
+                                      bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return image }
+        context.interpolationQuality = .high
+        context.draw(image, in: CGRect(x: 0, y: 0, width: width, height: Int(target)))
+        return context.makeImage() ?? image
     }
 
     /// Scales a small image up so its longest side is about 2000 pixels (at most four times).
@@ -111,7 +264,9 @@ final class ScreenReader {
         request.recognitionLevel = .accurate
         // Button labels are short ("30 SEC", "+1 MIN"); dictionary correction makes them worse.
         request.usesLanguageCorrection = false
-        request.automaticallyDetectsLanguage = true
+        // English only for now: with automatic language detection a lone digit sometimes came
+        // back as an Arabic letter or a CJK full stop.
+        request.recognitionLanguages = ["en-US"]
         // Low enough to keep the small print on a keypad seen from arm's length.
         request.minimumTextHeight = 0.006
 

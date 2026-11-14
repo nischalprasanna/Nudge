@@ -441,7 +441,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         }
 
         // The same outline has to hold still for about half a second before it is trusted.
-        let stableEnough = autoAnchor && stableCount >= 7
+        let stableEnough = autoAnchor && stableCount >= 5
         guard stableEnough || wantsAnchorNow else { return }
         // Asked to anchor to the middle of the view, but there is nothing to read there yet: keep waiting.
         if !stableEnough, forcedAnchorNeedsText, lastCandidate == nil, centerText < 3 { return }

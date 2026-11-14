@@ -82,28 +82,29 @@ struct OverlayCanvas: View {
         brackets(overlay.candidate, color: Theme.paper.opacity(0.7), width: 3)
         brackets(overlay.anchored, color: Theme.signal, width: 5)
 
-        // The button to press: a ring with a second ring breathing outward.
+        // The button to press: a small dot on its exact middle, with a thin ring so it can be
+        // found at a glance. Small on purpose: a big ring hid the key and its neighbours.
         if let target = overlay.target {
             let p = place(target)
             let beat = CGFloat((time * 1.6).truncatingRemainder(dividingBy: 1))
-            let outer = 24 + beat * 22
+            let outer = 9 + beat * 12
             context.stroke(Path(ellipseIn: CGRect(x: p.x - outer, y: p.y - outer, width: outer * 2, height: outer * 2)),
-                           with: .color(Theme.signal.opacity(Double(1 - beat) * 0.8)), lineWidth: 3)
-            context.stroke(Path(ellipseIn: CGRect(x: p.x - 25, y: p.y - 25, width: 50, height: 50)),
-                           with: .color(.black.opacity(0.55)), lineWidth: 9)
-            context.stroke(Path(ellipseIn: CGRect(x: p.x - 25, y: p.y - 25, width: 50, height: 50)),
-                           with: .color(Theme.signal), lineWidth: 6)
-            context.fill(Path(ellipseIn: CGRect(x: p.x - 5, y: p.y - 5, width: 10, height: 10)),
+                           with: .color(Theme.signal.opacity(Double(1 - beat) * 0.9)), lineWidth: 2)
+            context.fill(Path(ellipseIn: CGRect(x: p.x - 6, y: p.y - 6, width: 12, height: 12)),
+                         with: .color(.black.opacity(0.6)))
+            context.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)),
                          with: .color(Theme.signal))
         }
 
         // The fingertip: solid ring when seen, dashed when estimated from depth alone.
         if let tip = overlay.fingertip {
             let p = place(tip)
-            let ring = Path(ellipseIn: CGRect(x: p.x - 15, y: p.y - 15, width: 30, height: 30))
-            context.stroke(ring, with: .color(.black.opacity(0.55)), lineWidth: 7)
+            // A thin ring with a centre point, so it is clear exactly where Nudge thinks the finger is.
+            let ring = Path(ellipseIn: CGRect(x: p.x - 10, y: p.y - 10, width: 20, height: 20))
+            context.stroke(ring, with: .color(.black.opacity(0.55)), lineWidth: 5)
             context.stroke(ring, with: .color(Theme.paper),
-                           style: StrokeStyle(lineWidth: 4, dash: overlay.fingertipEstimated ? [5, 5] : []))
+                           style: StrokeStyle(lineWidth: 2.5, dash: overlay.fingertipEstimated ? [5, 5] : []))
+            context.fill(Path(ellipseIn: CGRect(x: p.x - 2.5, y: p.y - 2.5, width: 5, height: 5)), with: .color(Theme.paper))
         }
     }
 }

@@ -79,6 +79,8 @@ final class GuidanceEngine {
         var arrivedAt: TimeInterval?
         var strayedSince: TimeInterval?
         var remindedToPress = false
+        /// Since when the finger has been within reach of the button without quite settling on it.
+        var closeSince: TimeInterval?
     }
 
     private let tones: ToneEngine
@@ -224,7 +226,19 @@ final class GuidanceEngine {
 
             let wasOver = state.snapshot.phase == .aboveTarget
             // A little slack once over the button, so small tremors do not flip the state.
-            let over = distance < (wasOver ? target.radius * 1.5 : target.radius)
+            var over = distance < (wasOver ? target.radius * 1.5 : target.radius)
+            // The target is small, and the tracked position wobbles by a few millimetres. A finger
+            // that has stayed just around the middle for a second is there: do not keep it
+            // waiting for a perfectly still moment.
+            if distance < target.radius * 1.8 {
+                if state.closeSince == nil { state.closeSince = now }
+                if let since = state.closeSince, now - since > 1.0 {
+                    over = true
+                    if state.dwellStart == nil { state.dwellStart = since }
+                }
+            } else {
+                state.closeSince = nil
+            }
 
             if over {
                 // Over the button. Is the finger close enough to the glass to press it?
@@ -263,7 +277,7 @@ final class GuidanceEngine {
                     // Fast centred beeps for the moment it takes to be sure, then the chime and "tap".
                     cue = .seek(pan: 0, rise: 0, closeness: 1)
                     if state.dwellStart == nil { state.dwellStart = now }
-                    if now - (state.dwellStart ?? now) >= 0.3 {
+                    if now - (state.dwellStart ?? now) >= 0.2 {
                         cue = .onTarget
                         state.snapshot.phase = .onTarget
                         state.snapshot.hasArrived = true

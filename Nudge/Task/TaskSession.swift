@@ -296,7 +296,7 @@ final class TaskSession: ObservableObject {
                 phase = .findingScreen
                 // First choice: an outline with labels in it. After a few seconds, any steady
                 // outline; later still, the middle of the view if there is text there.
-                pipeline.setRelaxedSearch(elapsed > 4)
+                pipeline.setRelaxedSearch(elapsed > 1.5)
                 if elapsed > 10, !askedForMiddle {
                     askedForMiddle = true
                     pipeline.anchorNow(requireText: true)
@@ -578,8 +578,9 @@ final class TaskSession: ObservableObject {
         // Screens with little readable text are mostly icons, so the labels alone are not
         // enough: include a picture, unless the screen may show something personal.
         let personal = SafetyScreen.mayShowPersonalInformation(current.reading)
-        let fewLabels = current.reading.elements.count < Self.fewLabelsThreshold
-        let attach = !personal && (forcePicture || fewLabels)
+        // A picture is sent only when the planner has asked to look. Sent from the phone,
+        // picture requests took anywhere from 5 to more than 20 seconds.
+        let attach = !personal && forcePicture
         return PlanRequest(goal: goal, screen: current.reading, previousScreen: previous, history: history,
                            userConfirmedRisk: confirmedRisk, imageJPEG: attach ? Self.jpeg(from: current.image) : nil,
                            plannedNext: plannedNext)
@@ -724,6 +725,10 @@ final class TaskSession: ObservableObject {
     private static func radius(for element: ScreenElement, screen size: CGSize) -> Float {
         let halfWidth = Float(element.box.width * size.width) / 2
         let halfHeight = Float(element.box.height * size.height) / 2
+        if element.isButton {
+            // The outline of the key is known: aim for its middle, well clear of its neighbours.
+            return min(max(min(halfWidth, halfHeight) * 0.7, 0.004), 0.012)
+        }
         return min(max(max(halfWidth, halfHeight) * 0.8, 0.008), 0.02)
     }
 

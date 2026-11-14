@@ -11,6 +11,8 @@ struct ScreenElement: Identifiable, Codable, Equatable {
     var box: CGRect
     var confidence: Float
     var kind: Kind = .text
+    /// True when `box` is the outline of the button itself, not just the text printed on it.
+    var isButton = false
 
     var center: CGPoint { CGPoint(x: box.midX, y: box.midY) }
 }
