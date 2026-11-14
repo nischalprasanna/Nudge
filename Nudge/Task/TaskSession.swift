@@ -861,7 +861,7 @@ final class TaskSession: ObservableObject {
     private static let fewestLabelsForAScreen = 3
 
     private static func labels(of reading: ScreenReading) -> [String] {
-        reading.elements.map { $0.label.lowercased() }.sorted()
+        reading.elements.map { $0.label.lowercased() }.filter { $0 != ScreenReader.unreadLabel }.sorted()
     }
 
     private static func isYes(_ answer: String) -> Bool {

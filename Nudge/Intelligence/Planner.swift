@@ -155,6 +155,11 @@ struct CloudPlanner: TaskPlanner {
     label has an id, a position given as percent across and percent down the screen, and the height \
     of the label as a percent of the screen height (a name printed on two lines is about twice as tall).
 
+    A label of "?" is a key that was found on the screen but whose text could not be read. Work out \
+    what it is from where it sits among its neighbours (on a microwave keypad, the key in the bottom \
+    row on the far side of 0 from Stop is Start) and, if it is the one you need, use its id and \
+    give target_name the name you worked out. Prefer this to asking for a picture.
+
     Not every label is a button. Never choose these as the target:
     - Section headings: a title printed above a group of related buttons, usually in smaller text \
     and centred on a line of its own. On a microwave, "Auto Defrost" above Meat, Poultry and Fish \
@@ -196,6 +201,9 @@ struct CloudPlanner: TaskPlanner {
     Never mention ids, percentages or coordinates. "expect" briefly states what should change on \
     the screen after the press. "target_name" is the button's name as you would say it. Fill unused \
     fields with -1, 0 or an empty string.
+
+    When a time or number can be entered more than one way, choose the fewest presses: 90 seconds \
+    is 9 then 0, not 1, 3, 0.
 
     "then_press": when the action is "tap" and the rest of the way to the goal is already clear \
     from the screen now, list the presses that come after this one, in order, each with target_id \

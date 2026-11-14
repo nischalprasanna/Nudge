@@ -122,8 +122,13 @@ final class ScreenReader {
                     let text = Self.readSingle(Self.resized(crop, toHeight: height))
                     if !text.isEmpty {
                         results[slot] = text
-                        break
+                        return
                     }
+                }
+                // Coloured keys (a green Start, a red Stop) have faint lettering. Dark letters
+                // on a light ground are easier for the recogniser, so try the negative as well.
+                if let negative = self.inverted(Self.resized(crop, toHeight: 240)) {
+                    results[slot] = Self.readSingle(negative)
                 }
             }
         }
@@ -132,10 +137,24 @@ final class ScreenReader {
         labels = Self.fillInDigits(labels, keys: keys)
 
         var result = elements.enumerated().filter { !used.contains($0.offset) }.map(\.element)
-        for (key, label) in zip(keys, labels) where !label.isEmpty {
-            result.append(ScreenElement(label: label, box: key, confidence: 0.6, isButton: true))
+        for (key, label) in zip(keys, labels) {
+            // A key whose label could not be read is still a key. It is passed on as "?" so the
+            // planner can work out what it is from where it sits (the key opposite Stop on the
+            // bottom row is Start) and no picture has to be sent.
+            result.append(ScreenElement(label: label.isEmpty ? Self.unreadLabel : label, box: key,
+                                        confidence: label.isEmpty ? 0.2 : 0.6, isButton: true))
         }
         return result
+    }
+
+    /// The label given to a key that was found but could not be read.
+    static let unreadLabel = "?"
+
+    private func inverted(_ image: CGImage) -> CGImage? {
+        let filter = CIFilter.colorInvert()
+        filter.inputImage = CIImage(cgImage: image)
+        guard let output = filter.outputImage else { return nil }
+        return context.createCGImage(output, from: output.extent)
     }
 
     /// Outlines of same-sized buttons, normalized with the origin at the top-left.
@@ -205,8 +224,8 @@ final class ScreenReader {
         for key in keys.indices {
             let row = rows[key] - origin.x
             let column = columns[key] - origin.y
-            // Only overwrite nothing, or a stray single character; never a word such as "Stop".
-            guard labels[key].count <= 1 else { continue }
+            // Only overwrite nothing or scraps ("]| s" where a 5 should be); never a word such as "Stop".
+            guard labels[key].filter(\.isLetter).count < 3 else { continue }
             if (0..<3).contains(row), (0..<3).contains(column) {
                 labels[key] = String(1 + row * 3 + column)
             } else if row == 3, column == 1 {
