@@ -9,7 +9,7 @@ import simd
 /// Threading: ARKit delivers frames on `arQueue`. Vision work runs on `visionQueue`, and a frame
 /// is dropped if the previous one is still being processed, so tracking never falls behind.
 /// Text reading runs on its own queue so it never stalls fingertip tracking.
-final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
+final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @unchecked Sendable {
 
     /// 2D points for drawing over the camera preview, in portrait image coordinates (origin top-left).
     struct Overlay: Equatable {
@@ -76,6 +76,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     private var movedCandidate: ScreenCandidate?
     private var movedCount = 0
     private var stableRun: [ScreenCandidate] = []
+    /// Running estimate of how far LiDAR places the screen from the anchored plane (metres).
+    private var surfaceOffset: Float?
+    private var validationCompletions: [(Bool) -> Void] = []
     private var readCompletions: [(ScreenReading?, CGImage?) -> Void] = []
 
     // MARK: Lifecycle
@@ -133,6 +136,24 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
                 self.screenSize = nil
                 self.status = "Point the phone at the touchscreen"
             }
+        }
+    }
+
+    /// Checks whether the current outline is still on a screen the camera can see, so a task
+    /// can start straight away instead of searching again. False if there is no outline.
+    func anchorStillValid(timeout: TimeInterval = 1.0) async -> Bool {
+        await withCheckedContinuation { continuation in
+            var resumed = false
+            func finish(_ value: Bool) {
+                // Always called on the main thread.
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: value)
+            }
+            visionQueue.async {
+                self.validationCompletions.append { value in finish(value) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { finish(false) }
         }
     }
 
@@ -229,7 +250,26 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         // re-checked (a few times a second, and never while guiding to a button) to notice
         // that the device itself has been moved.
         let trackScreen = anchor != nil && anchorFromOutline && targetUV == nil && frameIndex % 15 == 0
-        let detection = detectors.detect(pixelBuffer: frame.capturedImage, wantScreen: findScreen || trackScreen)
+        let validate = !validationCompletions.isEmpty
+        let detection = detectors.detect(pixelBuffer: frame.capturedImage,
+                                         wantScreen: findScreen || trackScreen || validate)
+
+        if validate {
+            // Valid means: it came from a real outline, and the best outline in view right now
+            // is in the same place.
+            var valid = false
+            if let anchor, anchorFromOutline, let best = detection.screens.first {
+                let projected = anchor.corners.compactMap { geometry.project($0) }
+                if projected.count == 4 {
+                    let outline = ScreenCandidate(topLeft: projected[0], topRight: projected[1],
+                                                  bottomRight: projected[2], bottomLeft: projected[3], confidence: 1)
+                    valid = best.maxCornerDistance(to: outline) < 0.06
+                }
+            }
+            let completions = validationCompletions
+            validationCompletions = []
+            DispatchQueue.main.async { completions.forEach { $0(valid) } }
+        }
 
         if findScreen {
             updateCandidate(detection.screens.first, frame: frame, geometry: geometry)
@@ -319,6 +359,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     /// Makes `newAnchor` the current anchor and tells the UI.
     private func adopt(_ newAnchor: ScreenAnchor, status: String?) {
         anchor = newAnchor
+        surfaceOffset = nil
         resetSmoothing()
         let size = String(format: "%.0f by %.0f cm", newAnchor.width * 100, newAnchor.height * 100)
         let metres = CGSize(width: CGFloat(newAnchor.width), height: CGFloat(newAnchor.height))
@@ -460,14 +501,21 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
 
         // Preferred: real 3D fingertip from LiDAR, dropped straight down onto the glass.
         // This removes parallax, so the reported spot is where the finger will actually land.
-        // The nearest depth in a small window is used, because the window also covers the
-        // screen behind the finger and the fingertip's edges come back with low confidence.
         if let depthData = frame.sceneDepth,
-           let depth = DepthSampler.depth(in: depthData, atRaw: tip.point, radius: 2,
-                                          percentile: 0.08, minimumConfidence: 0) {
+           let depth = DepthSampler.depth(in: depthData, atRaw: tip.point, radius: 1,
+                                          percentile: 0.25, minimumConfidence: 0) {
             let backOfFinger = geometry.unproject(raw: tip.point, depth: depth)
             let located = anchor.locate(backOfFinger)
-            let padHeight = located.height - fingerThickness
+
+            // Height is measured against the screen as LiDAR sees it right beside the finger in
+            // this same frame, not only against the anchored plane. The two can disagree by a
+            // centimetre or two, and that disagreement would otherwise read as phantom height.
+            let local = screenHeightNear(tip, anchor: anchor, depthData: depthData, geometry: geometry)
+            if let local {
+                surfaceOffset = surfaceOffset.map { $0 * 0.8 + local * 0.2 } ?? local
+            }
+            let padHeight = located.height - (surfaceOffset ?? 0) - fingerThickness
+
             if padHeight > 0.004, padHeight < 0.30 {
                 uv = located.uv
                 hover = padHeight
@@ -501,6 +549,42 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         return FingerState(uv: CGPoint(x: CGFloat(filteredUV.x), y: CGFloat(filteredUV.y)),
                            hoverMeters: smoothedHover, method: method,
                            confidence: tip.confidence, timestamp: frame.timestamp)
+    }
+
+    /// How far LiDAR places the screen from the anchored plane, sampled just beyond the fingertip
+    /// (in the direction the finger points, where there is screen and no hand). Nil if it cannot be measured.
+    private func screenHeightNear(_ tip: FingertipDetection, anchor: ScreenAnchor,
+                                  depthData: ARDepthData, geometry: FrameGeometry) -> Float? {
+        guard let joint = tip.previousJoint else { return nil }
+        let width = geometry.imageSize.width
+        let height = geometry.imageSize.height
+        var vx = (tip.point.x - joint.x) * width
+        var vy = (tip.point.y - joint.y) * height
+        let length = hypot(vx, vy)
+        guard length > 2 else { return nil }
+        vx /= length
+        vy /= length
+
+        var heights: [Float] = []
+        // Three directions fanned around the pointing direction, two distances each
+        // (about 2 and 3.5 cm beyond the fingertip at a typical working distance).
+        for angle in [-0.7, 0.0, 0.7] as [CGFloat] {
+            let dx = vx * cos(angle) - vy * sin(angle)
+            let dy = vx * sin(angle) + vy * cos(angle)
+            for reach in [0.045, 0.075] as [CGFloat] {
+                let p = CGPoint(x: tip.point.x + dx * reach, y: tip.point.y + dy * reach * width / height)
+                guard (0...1).contains(p.x), (0...1).contains(p.y),
+                      let depth = DepthSampler.depth(in: depthData, atRaw: p, radius: 1, percentile: 0.5) else { continue }
+                let located = anchor.locate(geometry.unproject(raw: p, depth: depth))
+                // Only count samples that land on the anchored screen and are plausibly its surface.
+                guard (0...1).contains(located.uv.x), (0...1).contains(located.uv.y),
+                      abs(located.height) < 0.06 else { continue }
+                heights.append(located.height)
+            }
+        }
+        guard heights.count >= 3 else { return nil }
+        heights.sort()
+        return heights[heights.count / 2]
     }
 
     private func resetSmoothing() {

@@ -116,25 +116,33 @@ final class TaskSession: ObservableObject {
         }
 
         // 1. Find and anchor the screen.
-        // Always look afresh: an outline left over from earlier may no longer be on the screen.
+        // The camera looks for the screen from the moment this page opens. If the outline it
+        // already has is still on a screen in view, use it and start at once. Otherwise look
+        // afresh: an outline left over from earlier may no longer be on the screen.
         phase = .findingScreen
-        pipeline.clearAnchor()
-        _ = await waitUntil(timeout: 1) { !self.pipeline.isAnchored }
-        await speaker.sayAndWait("Point the phone at the touchscreen and hold it steady.")
-        if !(await waitUntil(timeout: 10) { self.pipeline.isAnchored }) {
-            // No clear outline: anchor to whatever is in the middle of the view.
-            pipeline.anchorNow()
-            _ = await waitUntil(timeout: 3) { self.pipeline.isAnchored }
-        }
-        guard pipeline.isAnchored else {
-            if !Task.isCancelled {
-                tones.playError()
-                await speaker.sayAndWait("I couldn't find a screen. Try holding the phone about forty centimetres away.")
+        var reused = false
+        if pipeline.isAnchored { reused = await pipeline.anchorStillValid() }
+        if !reused {
+            guidance.resetHeightCalibration()
+            pipeline.clearAnchor()
+            _ = await waitUntil(timeout: 1) { !self.pipeline.isAnchored }
+            // Not awaited: the search runs while this is being said, and carries on as soon as it succeeds.
+            speaker.say("Point the phone at the touchscreen.")
+            if !(await waitUntil(timeout: 10) { self.pipeline.isAnchored }) {
+                // No clear outline: anchor to whatever is in the middle of the view.
+                pipeline.anchorNow()
+                _ = await waitUntil(timeout: 3) { self.pipeline.isAnchored }
             }
-            return
+            guard pipeline.isAnchored else {
+                if !Task.isCancelled {
+                    tones.playError()
+                    await speaker.sayAndWait("I couldn't find a screen. Try holding the phone about forty centimetres away.")
+                }
+                return
+            }
+            // Let the outline settle for a moment before reading.
+            try? await Task.sleep(nanoseconds: 300_000_000)
         }
-        // Let the outline settle for a moment before reading.
-        try? await Task.sleep(nanoseconds: 400_000_000)
         if Task.isCancelled { return }
 
         // 2. Read it.

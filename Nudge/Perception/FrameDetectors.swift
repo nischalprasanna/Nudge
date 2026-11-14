@@ -46,6 +46,8 @@ struct ScreenCandidate {
 struct FingertipDetection {
     var point: CGPoint
     var confidence: Float
+    /// The last finger joint before the tip, when visible. Tip minus this is the pointing direction.
+    var previousJoint: CGPoint?
 }
 
 /// Runs the per-frame Vision requests: index fingertip (every frame) and screen outline (when asked).
@@ -96,8 +98,12 @@ final class FrameDetectors {
         guard let hand = handRequest.results?.first,
               let tip = try? hand.recognizedPoint(.indexTip),
               tip.confidence > 0.2 else { return nil }
+        var previous: CGPoint?
+        if let joint = try? hand.recognizedPoint(.indexDIP), joint.confidence > 0.2 {
+            previous = FrameGeometry.raw(fromVisionPortrait: joint.location)
+        }
         return FingertipDetection(point: FrameGeometry.raw(fromVisionPortrait: tip.location),
-                                  confidence: tip.confidence)
+                                  confidence: tip.confidence, previousJoint: previous)
     }
 
     /// Ranks outlines so that the one most likely to be the control panel comes first:

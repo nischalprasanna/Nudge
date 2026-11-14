@@ -50,7 +50,11 @@ final class GuidanceEngine {
         var screenHeight: Float = 0.1
         var snapshot = Snapshot()
         var dwellStart: TimeInterval?
-        var aboveSince: TimeInterval?
+        /// Lowest height seen while over the button, and when it last got meaningfully lower.
+        var lowestAbove: Float?
+        var lastDescent: TimeInterval = 0
+        /// Height the sensor reports when the finger is actually on the glass, learned from use.
+        var touchHeight: Float = 0
         var lastVoiceTime: TimeInterval = 0
         var lastVoiceText = ""
         var lastHeightPrompt: TimeInterval = 0
@@ -85,7 +89,10 @@ final class GuidanceEngine {
     func begin(target: Target, screenWidth: Float, screenHeight: Float) {
         let now = ProcessInfo.processInfo.systemUptime
         lock.withLock {
+            // What was learned about the height sensor carries over from one button to the next.
+            let learned = $0.touchHeight
             $0 = State()
+            $0.touchHeight = learned
             $0.target = target
             $0.screenWidth = screenWidth
             $0.screenHeight = screenHeight
@@ -103,6 +110,11 @@ final class GuidanceEngine {
             $0.snapshot.phase = .idle
         }
         tones.silence()
+    }
+
+    /// Forgets what was learned about the height sensor. Call when a new screen is anchored.
+    func resetHeightCalibration() {
+        lock.withLock { $0.touchHeight = 0 }
     }
 
     /// Feed the latest fingertip position.
@@ -128,7 +140,7 @@ final class GuidanceEngine {
                 cue = .silent
                 state.snapshot.distance = nil
                 state.dwellStart = nil
-                state.aboveSince = nil
+                state.lowestAbove = nil
                 if state.snapshot.phase != .seeking { state.snapshot.phase = .seeking }
                 // Only mention it if the finger has been missing for a while, and rarely.
                 if !state.snapshot.hasArrived,
@@ -154,13 +166,34 @@ final class GuidanceEngine {
             if over {
                 // Over the button. Is the finger close enough to the glass to press it?
                 // If the height is unknown (no depth reading), assume it is.
-                var near = finger.hoverMeters.map { $0 <= tapHeight } ?? true
-                if !near {
-                    if state.aboveSince == nil { state.aboveSince = now }
-                    // Safety net: if the height reading never comes down, do not leave the user stuck.
-                    if now - (state.aboveSince ?? now) > 5 { near = true }
-                } else {
-                    state.aboveSince = nil
+                var near = true
+                if let reported = finger.hoverMeters {
+                    near = reported - state.touchHeight <= tapHeight
+                    if near {
+                        state.lowestAbove = nil
+                    } else {
+                        // The reading says "too high". If it has also stopped coming down, the finger
+                        // has nowhere left to go: it is on the glass and the sensor is reading high.
+                        // Accept the tap, and remember that reading as the touching height from now on.
+                        if let lowest = state.lowestAbove {
+                            if reported < lowest - 0.004 {
+                                state.lowestAbove = reported
+                                state.lastDescent = now
+                            }
+                        } else {
+                            state.lowestAbove = reported
+                            state.lastDescent = now
+                        }
+                        if now - state.lastDescent > 1.2 {
+                            // Only learn from readings that could plausibly be a touch. A finger held
+                            // still well above the glass still gets its tap, but teaches nothing.
+                            if reported <= 0.06 {
+                                state.touchHeight = max(state.touchHeight, reported - 0.01)
+                            }
+                            state.lowestAbove = nil
+                            near = true
+                        }
+                    }
                 }
 
                 if near {
@@ -191,7 +224,7 @@ final class GuidanceEngine {
             }
 
             state.dwellStart = nil
-            state.aboveSince = nil
+            state.lowestAbove = nil
             state.snapshot.phase = .seeking
             let closeness = 1 - min(distance / 0.12, 1)
             cue = .seek(pan: dx / 0.06, rise: -dy / 0.06, closeness: closeness)
@@ -204,7 +237,7 @@ final class GuidanceEngine {
             }
 
             // Dragging along the glass while still away from the button would press other buttons.
-            if let hover = finger.hoverMeters, hover < dragHeight, distance > target.radius * 2.5,
+            if let hover = finger.hoverMeters, hover - state.touchHeight < dragHeight, distance > target.radius * 2.5,
                now - state.lastHeightPrompt > 4 {
                 state.lastHeightPrompt = now
                 state.lastVoiceTime = now
