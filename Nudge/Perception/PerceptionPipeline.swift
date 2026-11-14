@@ -88,7 +88,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     private var wantsReference = false
     private let changeFinder = ScreenChangeFinder()
     /// Use the screen-change finder when the camera's hand tracker has no confident fingertip.
-    var usesScreenChangeFinder = true
+    /// Off since the afternoon of 14 November: in live use its position wandered, and the
+    /// testers preferred the hand tracker on its own, as it was the night before.
+    var usesScreenChangeFinder = false
     /// How far beyond the screen's edges the finder looks, as a fraction of the screen's size.
     /// A hand reaching in is picked up before it is over the screen itself.
     private static let sampleMargin: Float = 0.3
@@ -260,6 +262,10 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     /// Reads the marker setting saved on the phone. Call after it changes.
     func loadMarkerSetting() {
         let defaults = UserDefaults.standard
+        if !defaults.bool(forKey: "marker.resetOnce") {
+            defaults.set(true, forKey: "marker.resetOnce")
+            defaults.set(false, forKey: "marker.on")
+        }
         let on = defaults.bool(forKey: "marker.on")
         var color: MarkerFinder.Color?
         if defaults.object(forKey: "marker.cb") != nil {

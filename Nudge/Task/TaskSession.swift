@@ -752,7 +752,9 @@ final class TaskSession: ObservableObject {
         let halfHeight = Float(element.box.height * size.height) / 2
         if element.isButton {
             // The outline of the key is known: aim for its middle, well clear of its neighbours.
-            return min(max(min(halfWidth, halfHeight) * 0.7, 0.004), 0.012)
+            // Most of the key, but never under 6 mm: the hand tracker's position wobbles by a
+            // few millimetres, and a smaller target kept "tap" from ever being given.
+            return min(max(min(halfWidth, halfHeight) * 0.9, 0.006), 0.012)
         }
         return min(max(max(halfWidth, halfHeight) * 0.8, 0.008), 0.02)
     }
