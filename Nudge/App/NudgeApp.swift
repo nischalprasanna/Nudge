@@ -6,9 +6,11 @@ struct NudgeApp: App {
 
     var body: some Scene {
         WindowGroup {
-            BootstrapView()
-                .environmentObject(watchLink)
-                .onAppear { watchLink.start() }
+            NavigationStack {
+                BootstrapView()
+            }
+            .environmentObject(watchLink)
+            .onAppear { watchLink.start() }
         }
     }
 }

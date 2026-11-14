@@ -28,6 +28,16 @@ struct BootstrapView: View {
             .buttonStyle(.borderedProminent)
             .accessibilityHint("Sends a test vibration to your Apple Watch")
 
+            NavigationLink {
+                PerceptionTestView()
+            } label: {
+                Text("Perception test")
+                    .font(.title2.bold())
+                    .frame(maxWidth: .infinity, minHeight: 80)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityHint("Opens the camera to test screen anchoring, fingertip tracking and text reading")
+
             Spacer()
         }
         .padding(24)
