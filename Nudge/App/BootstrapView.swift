@@ -1,48 +1,55 @@
 import SwiftUI
 import UIKit
 
-/// Bootstrap screen: one large button that makes the Watch vibrate.
-/// Replaced by the real task screen once the core loop lands.
+/// Home screen: start a task, plus test tools.
 struct BootstrapView: View {
     @EnvironmentObject private var watchLink: PhoneWatchLink
 
     var body: some View {
-        VStack(spacing: 24) {
+        VStack(spacing: 20) {
             Text("Nudge")
                 .font(.largeTitle.bold())
                 .accessibilityAddTraits(.isHeader)
 
-            Text(watchLink.status)
-                .font(.title3)
-                .multilineTextAlignment(.center)
-                .accessibilityLabel("Watch status: \(watchLink.status)")
+            NavigationLink {
+                TaskView()
+            } label: {
+                Text("Start a task")
+                    .font(.largeTitle.bold())
+                    .frame(maxWidth: .infinity, minHeight: 200)
+            }
+            .buttonStyle(.borderedProminent)
+            .accessibilityHint("Opens the camera and guides you through using a touchscreen")
+
+            NavigationLink {
+                PerceptionTestView()
+            } label: {
+                Text("Perception test")
+                    .font(.title3.bold())
+                    .frame(maxWidth: .infinity, minHeight: 56)
+            }
+            .buttonStyle(.bordered)
+            .accessibilityHint("Test screen for anchoring, fingertip tracking and text reading")
 
             Button {
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
                 watchLink.send(.ping)
             } label: {
                 Text("Buzz Watch")
-                    .font(.title.bold())
-                    .frame(maxWidth: .infinity, minHeight: 160)
-            }
-            .buttonStyle(.borderedProminent)
-            .accessibilityHint("Sends a test vibration to your Apple Watch")
-
-            NavigationLink {
-                PerceptionTestView()
-            } label: {
-                Text("Perception test")
-                    .font(.title2.bold())
-                    .frame(maxWidth: .infinity, minHeight: 80)
+                    .font(.title3.bold())
+                    .frame(maxWidth: .infinity, minHeight: 56)
             }
             .buttonStyle(.bordered)
-            .accessibilityHint("Opens the camera to test screen anchoring, fingertip tracking and text reading")
+            .accessibilityHint("Sends a test vibration to your Apple Watch")
+
+            Text(watchLink.status)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .accessibilityLabel("Watch status: \(watchLink.status)")
 
             Spacer()
         }
         .padding(24)
-        .onChange(of: watchLink.status) { _, newValue in
-            UIAccessibility.post(notification: .announcement, argument: newValue)
-        }
     }
 }

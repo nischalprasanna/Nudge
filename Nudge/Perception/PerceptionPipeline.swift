@@ -16,6 +16,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         var candidate: [CGPoint] = []
         var anchored: [CGPoint] = []
         var fingertip: CGPoint?
+        var target: CGPoint?
     }
 
     // MARK: Published state (main thread)
@@ -31,6 +32,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var framesPerSecond: Double = 0
     @Published private(set) var portraitAspect: CGFloat = 0.75
     @Published private(set) var screenSizeText = ""
+    /// Physical size of the anchored screen in metres.
+    @Published private(set) var screenSize: CGSize?
 
     // MARK: Configuration
 
@@ -67,6 +70,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     private var lastFrameTime: TimeInterval?
     private var smoothedFPS: Double = 0
     private var lastPublishTime: TimeInterval = 0
+    private var targetUV: CGPoint?
+    private var readCompletions: [(ScreenReading?, CGImage?) -> Void] = []
 
     // MARK: Lifecycle
 
@@ -117,16 +122,41 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
                 self.reading = nil
                 self.rectifiedImage = nil
                 self.screenSizeText = ""
+                self.screenSize = nil
                 self.status = "Point the phone at the touchscreen"
             }
         }
     }
 
-    /// Re-read the anchored screen. Results arrive in `reading`.
-    func readScreen() {
+    /// Marks a point on the screen (normalized) to highlight in the overlay. Nil clears it.
+    func setTarget(_ uv: CGPoint?) {
+        visionQueue.async { self.targetUV = uv }
+    }
+
+    /// Re-reads the anchored screen and waits for the result. Nil if the screen could not be read.
+    func readScreenNow(timeout: TimeInterval = 6) async -> (reading: ScreenReading, image: CGImage)? {
+        await withCheckedContinuation { continuation in
+            var resumed = false
+            func finish(_ value: (reading: ScreenReading, image: CGImage)?) {
+                // Always called on the main thread.
+                guard !resumed else { return }
+                resumed = true
+                continuation.resume(returning: value)
+            }
+            readScreen { reading, image in
+                if let reading, let image { finish((reading, image)) } else { finish(nil) }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + timeout) { finish(nil) }
+        }
+    }
+
+    /// Re-read the anchored screen. Results arrive in `reading` and, if given, in `completion` (main thread).
+    func readScreen(completion: ((ScreenReading?, CGImage?) -> Void)? = nil) {
         visionQueue.async {
+            if let completion { self.readCompletions.append(completion) }
             guard self.anchor != nil else {
                 self.publishStatus("Anchor the screen first")
+                self.finishRead(nil, nil)
                 return
             }
             DispatchQueue.main.async { self.isReading = true }
@@ -218,6 +248,10 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         if let tip = detection.fingertip {
             newOverlay.fingertip = FrameGeometry.portrait(fromRaw: tip.point)
         }
+        if let anchor, let targetUV,
+           let raw = geometry.project(anchor.world(u: Float(targetUV.x), v: Float(targetUV.y))) {
+            newOverlay.target = FrameGeometry.portrait(fromRaw: raw)
+        }
         let fps = smoothedFPS
         let aspect = geometry.portraitAspect
         DispatchQueue.main.async {
@@ -256,8 +290,10 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         resetSmoothing()
         let usedFallback = lastCandidate == nil
         let size = String(format: "%.0f by %.0f cm", newAnchor.width * 100, newAnchor.height * 100)
+        let metres = CGSize(width: CGFloat(newAnchor.width), height: CGFloat(newAnchor.height))
         DispatchQueue.main.async {
             self.isAnchored = true
+            self.screenSize = metres
             self.screenSizeText = size
             self.status = usedFallback
                 ? "Anchored to the middle of the view (no outline found)"
@@ -269,17 +305,26 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     /// outline's corners sit on that plane.
     private func makeAnchor(from outline: ScreenCandidate, frame: ARFrame, geometry: FrameGeometry) -> ScreenAnchor? {
         let corners = outline.corners
-        let centroid = CGPoint(x: corners.map(\.x).reduce(0, +) / 4, y: corners.map(\.y).reduce(0, +) / 4)
-        // Sample inside the outline so measurements land on the glass, not the bezel or the wall behind.
-        let inset = corners.map { CGPoint(x: $0.x + ($0.x.distance(to: centroid.x)) * 0.2,
-                                          y: $0.y + ($0.y.distance(to: centroid.y)) * 0.2) }
-        let surface = inset.compactMap { surfacePoint(atRaw: $0, frame: frame, geometry: geometry) }
-        guard surface.count == 4 else { return nil }
-
-        let cross = simd_cross(surface[2] - surface[0], surface[3] - surface[1])
-        guard simd_length(cross) > 1e-6 else { return nil }
-        let planeNormal = simd_normalize(cross)
-        let planePoint = (surface[0] + surface[1] + surface[2] + surface[3]) / 4
+        // Sample a grid inside the outline so measurements land on the glass, not the bezel or
+        // the wall behind, and fit one plane through all of them. Many points average out the
+        // noise that a handful of corner samples cannot.
+        var surface: [simd_float3] = []
+        let steps: [CGFloat] = [0.12, 0.31, 0.5, 0.69, 0.88]
+        for s in steps {
+            for t in steps {
+                let top = CGPoint(x: corners[0].x + (corners[1].x - corners[0].x) * s,
+                                  y: corners[0].y + (corners[1].y - corners[0].y) * s)
+                let bottom = CGPoint(x: corners[3].x + (corners[2].x - corners[3].x) * s,
+                                     y: corners[3].y + (corners[2].y - corners[3].y) * s)
+                let p = CGPoint(x: top.x + (bottom.x - top.x) * t, y: top.y + (bottom.y - top.y) * t)
+                if let point = surfacePoint(atRaw: p, frame: frame, geometry: geometry) {
+                    surface.append(point)
+                }
+            }
+        }
+        guard surface.count >= 8, let plane = Self.fitPlane(surface, geometry: geometry) else { return nil }
+        let planeNormal = plane.normal
+        let planePoint = plane.point
 
         var world: [simd_float3] = []
         for corner in corners {
@@ -292,6 +337,40 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         }
         return ScreenAnchor(topLeft: world[0], topRight: world[1], bottomRight: world[2], bottomLeft: world[3],
                             cameraPosition: geometry.cameraPosition, createdAt: frame.timestamp)
+    }
+
+    /// Least-squares plane through measured surface points, with outliers dropped.
+    /// Works in camera space, where the screen is roughly face-on, so depth = a*x + b*y + c is well behaved.
+    private static func fitPlane(_ world: [simd_float3], geometry: FrameGeometry) -> (point: simd_float3, normal: simd_float3)? {
+        var points = world.map { simd_make_float3(geometry.worldToCamera * simd_float4($0.x, $0.y, $0.z, 1)) }
+
+        func solve(_ pts: [simd_float3]) -> simd_float3? {
+            var m = simd_float3x3()
+            var rhs = simd_float3()
+            for p in pts {
+                let row = simd_float3(p.x, p.y, 1)
+                m += simd_float3x3(columns: (row * row.x, row * row.y, row * row.z))
+                rhs += row * p.z
+            }
+            guard abs(simd_determinant(m)) > 1e-12 else { return nil }
+            return m.inverse * rhs
+        }
+
+        guard var coefficients = solve(points) else { return nil }
+        // One pass of outlier rejection: drop points more than 1 cm off the first fit, then refit.
+        let kept = points.filter { abs($0.x * coefficients.x + $0.y * coefficients.y + coefficients.z - $0.z) < 0.01 }
+        if kept.count >= 6, kept.count < points.count, let refined = solve(kept) {
+            coefficients = refined
+            points = kept
+        }
+
+        let centroid = points.reduce(simd_float3(), +) / Float(points.count)
+        let onPlane = simd_float3(centroid.x, centroid.y,
+                                  coefficients.x * centroid.x + coefficients.y * centroid.y + coefficients.z)
+        let normalCamera = simd_normalize(simd_float3(coefficients.x, coefficients.y, -1))
+        let point = simd_make_float3(geometry.cameraTransform * simd_float4(onPlane.x, onPlane.y, onPlane.z, 1))
+        let normal = simd_normalize(simd_make_float3(geometry.cameraTransform * simd_float4(normalCamera.x, normalCamera.y, normalCamera.z, 0)))
+        return (point, normal)
     }
 
     /// World position of the real surface seen at an image point: ARKit raycast first, raw LiDAR depth second.
@@ -361,6 +440,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     private func performRead(frame: ARFrame) {
         guard let anchor else {
             DispatchQueue.main.async { self.isReading = false }
+            finishRead(nil, nil)
             return
         }
         let geometry = FrameGeometry(frame: frame)
@@ -369,6 +449,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
                 self.isReading = false
                 self.status = "The whole screen is not in view. Move the phone back a little."
             }
+            finishRead(nil, nil)
             return
         }
         let aspect = anchor.aspectRatio
@@ -383,6 +464,17 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
                 self.isReading = false
                 self.status = "Read \(elements.count) labels in \(ms) ms"
             }
+            self.visionQueue.async { self.finishRead(reading, image) }
+        }
+    }
+
+    /// Hands a finished (or failed) read to everyone waiting on it. Call on `visionQueue`.
+    private func finishRead(_ reading: ScreenReading?, _ image: CGImage?) {
+        let completions = readCompletions
+        readCompletions = []
+        guard !completions.isEmpty else { return }
+        DispatchQueue.main.async {
+            completions.forEach { $0(reading, image) }
         }
     }
 
