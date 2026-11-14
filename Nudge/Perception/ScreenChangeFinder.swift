@@ -97,49 +97,93 @@ struct ScreenChangeFinder {
             solid[y * w + w - 1] = covered[y * w + w - 1] && solid[y * w + w - 2]
         }
 
-        // The hand is the largest connected shape. It usually reaches the edge of the picture,
-        // but not always as one piece: where a finger passes over something its own colour
-        // (a wooden trim, a beige bezel) the shape breaks, so reaching the edge is not required.
+        // Connected shapes of covered pixels.
         var label = [Int32](repeating: 0, count: count)
-        var bestPixels: [Int] = []
-        var next: Int32 = 0
+        var shapes: [[Int]] = []
         var stack: [Int] = []
         for start in 0..<count where solid[start] && label[start] == 0 {
-            next += 1
+            let id = Int32(shapes.count + 1)
             var pixels: [Int] = []
             stack.append(start)
-            label[start] = next
+            label[start] = id
             while let index = stack.popLast() {
                 pixels.append(index)
                 let x = index % w, y = index / w
-                if x > 0, solid[index - 1], label[index - 1] == 0 { label[index - 1] = next; stack.append(index - 1) }
-                if x < w - 1, solid[index + 1], label[index + 1] == 0 { label[index + 1] = next; stack.append(index + 1) }
-                if y > 0, solid[index - w], label[index - w] == 0 { label[index - w] = next; stack.append(index - w) }
-                if y < h - 1, solid[index + w], label[index + w] == 0 { label[index + w] = next; stack.append(index + w) }
+                if x > 0, solid[index - 1], label[index - 1] == 0 { label[index - 1] = id; stack.append(index - 1) }
+                if x < w - 1, solid[index + 1], label[index + 1] == 0 { label[index + 1] = id; stack.append(index + 1) }
+                if y > 0, solid[index - w], label[index - w] == 0 { label[index - w] = id; stack.append(index - w) }
+                if y < h - 1, solid[index + w], label[index + w] == 0 { label[index + w] = id; stack.append(index + w) }
             }
-            if pixels.count > bestPixels.count { bestPixels = pixels }
+            shapes.append(pixels)
         }
+        // Ignore specks.
+        let smallest = max(12, count / 400)
+        shapes = shapes.filter { $0.count >= smallest }.sorted { $0.count > $1.count }
+        guard var bestPixels = shapes.first else { return nil }
+
+        // A hand rarely shows up as one piece: where it passes over something its own colour
+        // (a wooden table, a beige trim) nothing looks different and the shape breaks. Looking
+        // only at the largest piece often finds the back of the hand and misses the finger.
+        // So gather the pieces that lie within a few centimetres of each other into one hand.
+        let metresX = physicalWidth / Float(w), metresY = physicalHeight / Float(h)
+        func metres(_ index: Int) -> SIMD2<Float> { SIMD2(Float(index % w) * metresX, Float(index / w) * metresY) }
+        func distance(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> Float { ((a - b) * (a - b)).sum().squareRoot() }
+        func thinned(_ pixels: [Int]) -> [SIMD2<Float>] {
+            stride(from: 0, to: pixels.count, by: max(1, pixels.count / 60)).map { metres(pixels[$0]) }
+        }
+        /// Centre of a set of points and the direction it is longest in.
+        func line(through points: [SIMD2<Float>]) -> (centre: SIMD2<Float>, axis: SIMD2<Float>) {
+            var centre = SIMD2<Float>(0, 0)
+            for point in points { centre += point }
+            centre /= Float(max(points.count, 1))
+            var sxx: Float = 0, sxy: Float = 0, syy: Float = 0
+            for point in points {
+                let d = point - centre
+                sxx += d.x * d.x
+                sxy += d.x * d.y
+                syy += d.y * d.y
+            }
+            let angle = 0.5 * atan2(2 * sxy, sxx - syy)
+            return (centre, SIMD2(cos(angle), sin(angle)))
+        }
+
+        // Pieces are added only if they carry on along the line of the main piece, a short gap
+        // beyond one of its ends. Anything off to the side, or far away, is something else.
+        let main = line(through: thinned(bestPixels))
+        let across = SIMD2<Float>(-main.axis.y, main.axis.x)
+        func span(_ points: [SIMD2<Float>]) -> (low: Float, high: Float, side: Float) {
+            let along = points.map { (($0 - main.centre) * main.axis).sum() }
+            let sideways = points.map { abs((($0 - main.centre) * across).sum()) }.sorted()
+            return (along.min() ?? 0, along.max() ?? 0, sideways[sideways.count / 2])
+        }
+        var reach = span(thinned(bestPixels))
+        // Only pieces of some size: a chain of small specks must not lead off across the screen.
+        var remaining = shapes.dropFirst().filter { $0.count >= max(smallest, bestPixels.count / 8) }
+        var grew = true
+        while grew {
+            grew = false
+            for (position, shape) in remaining.enumerated() {
+                let piece = span(thinned(shape))
+                let gap = max(piece.low - reach.high, reach.low - piece.high)
+                if piece.side < 0.02, gap < 0.03 {
+                    bestPixels += shape
+                    reach.low = min(reach.low, piece.low)
+                    reach.high = max(reach.high, piece.high)
+                    remaining.remove(at: position)
+                    grew = true
+                    break
+                }
+            }
+        }
+
         let coverage = Float(bestPixels.count) / Float(count)
         // Too small is noise or a digit changing on the display; too large means the picture as
         // a whole has changed (the phone moved, the lights changed) and nothing can be concluded.
         guard coverage > 0.015, coverage < 0.6 else { return nil }
 
-        // A finger is long and narrow. Find the line it lies along, and its two ends.
-        let metresX = physicalWidth / Float(w), metresY = physicalHeight / Float(h)
-        func metres(_ index: Int) -> SIMD2<Float> { SIMD2(Float(index % w) * metresX, Float(index / w) * metresY) }
-        func distance(_ a: SIMD2<Float>, _ b: SIMD2<Float>) -> Float { ((a - b) * (a - b)).sum().squareRoot() }
-        var centre = SIMD2<Float>(0, 0)
-        for index in bestPixels { centre += metres(index) }
-        centre /= Float(bestPixels.count)
-        var sxx: Float = 0, sxy: Float = 0, syy: Float = 0
-        for index in bestPixels {
-            let d = metres(index) - centre
-            sxx += d.x * d.x
-            sxy += d.x * d.y
-            syy += d.y * d.y
-        }
-        let angle = 0.5 * atan2(2 * sxy, sxx - syy)
-        let axis = SIMD2<Float>(cos(angle), sin(angle))
+        // A hand with a finger out is long and narrow. Find the line it lies along, and its two ends.
+        let fitted = line(through: bestPixels.map(metres))
+        let centre = fitted.centre, axis = fitted.axis
 
         let along = bestPixels.map { (index: $0, t: ((metres($0) - centre) * axis).sum()) }.sorted { $0.t < $1.t }
         let take = max(4, along.count / 25)

@@ -846,8 +846,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         let chromaStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
 
         let margin = Self.sampleMargin
-        let width = 112
-        let height = min(max(Int(Float(width) * anchor.height / max(anchor.width, 0.001)), 40), 200)
+        // About 1.5 mm per sample on a typical panel: enough for a finger, cheap enough for every frame.
+        let width = 88
+        let height = min(max(Int(Float(width) * anchor.height / max(anchor.width, 0.001)), 40), 170)
         if let reference, reference.width != width || reference.height != height { return nil }
         let count = width * height
         var sample = ScreenChangeFinder.Sample(width: width, height: height,

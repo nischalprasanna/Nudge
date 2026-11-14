@@ -221,6 +221,7 @@ final class ScreenReader {
         request.recognitionLevel = .accurate
         request.usesLanguageCorrection = false
         request.recognitionLanguages = ["en-US"]
+        request.automaticallyDetectsLanguage = false
         request.minimumTextHeight = 0
         guard (try? VNImageRequestHandler(cgImage: image, options: [:]).perform([request])) != nil else { return "" }
         let pieces = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }
@@ -238,11 +239,13 @@ final class ScreenReader {
         return context.makeImage() ?? image
     }
 
-    /// Scales a small image up so its longest side is about 2000 pixels (at most four times).
+    /// Scales a small image up so its longest side is about 2800 pixels (at most four times).
     static func enlarged(_ image: CGImage) -> CGImage {
         let longest = CGFloat(max(image.width, image.height))
-        guard longest < 1600, longest > 0 else { return image }
-        let scale = min(4, 2000 / longest)
+        // Up to about 2800 pixels: a whole control panel photographed from arm's length comes
+        // in around 2000, with its small labels only a dozen pixels tall.
+        guard longest < 2500, longest > 0 else { return image }
+        let scale = min(4, 2800 / longest)
         let width = Int(CGFloat(image.width) * scale)
         let height = Int(CGFloat(image.height) * scale)
         guard let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
@@ -267,6 +270,7 @@ final class ScreenReader {
         // English only for now: with automatic language detection a lone digit sometimes came
         // back as an Arabic letter or a CJK full stop.
         request.recognitionLanguages = ["en-US"]
+        request.automaticallyDetectsLanguage = false
         // Low enough to keep the small print on a keypad seen from arm's length.
         request.minimumTextHeight = 0.006
 
