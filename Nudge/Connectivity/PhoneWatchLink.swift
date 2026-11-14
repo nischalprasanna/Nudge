@@ -55,6 +55,29 @@ final class PhoneWatchLink: NSObject, ObservableObject, WCSessionDelegate {
         })
     }
 
+    private var lastGuidanceSent = Date.distantPast
+    private var lastGuidanceKey = ""
+
+    /// Tells the Watch what guidance is doing, so it can beat out the rhythm itself and show the
+    /// same cue as the phone. Sending each beat from the phone made them bunch up over
+    /// Bluetooth; the Watch keeps time better. Call as often as you like: updates are thinned
+    /// to about five a second unless the phase or the word changes.
+    func sendGuidance(phase: WatchPhase, closeness: Float? = nil, direction: SIMD2<Float>? = nil, word: String = "") {
+        guard let session, session.activationState == .activated, session.isReachable else { return }
+        let key = "\(phase.rawValue)|\(word)|\(closeness == nil)"
+        let now = Date()
+        guard key != lastGuidanceKey || now.timeIntervalSince(lastGuidanceSent) > 0.2 else { return }
+        lastGuidanceKey = key
+        lastGuidanceSent = now
+        var message: [String: Any] = [WatchMessageKey.phase: phase.rawValue, WatchMessageKey.word: word]
+        if let closeness { message[WatchMessageKey.closeness] = Double(closeness) }
+        if let direction {
+            message[WatchMessageKey.directionX] = Double(direction.x)
+            message[WatchMessageKey.directionY] = Double(direction.y)
+        }
+        session.sendMessage(message, replyHandler: nil, errorHandler: nil)
+    }
+
     private func refresh(_ session: WCSession) {
         let reachable = session.isReachable
         let text: String

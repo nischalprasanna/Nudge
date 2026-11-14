@@ -107,6 +107,9 @@ final class TaskSession: ObservableObject {
             self.visual.mode = .listening(level: level)
         }
         guidance.onHaptic = { command in
+            // The approach beats are generated on the Watch from the closeness it is sent; only
+            // the one-off cues go as commands.
+            guard command != .approach else { return }
             DispatchQueue.main.async { PhoneWatchLink.shared.send(command) }
         }
     }
@@ -144,6 +147,7 @@ final class TaskSession: ObservableObject {
         outcome = .none
         visual.word = ""
         Haptics.tap()
+        if channels.watch { PhoneWatchLink.shared.sendGuidance(phase: .working) }
         attemptStarted = Date()
         runTask = Task { [weak self] in
             await self?.run(typedGoal: typedGoal)
@@ -160,6 +164,7 @@ final class TaskSession: ObservableObject {
         logAttempt(stopped: true)
         finish()
         if announce { speaker.say("Stopped.") } else { speaker.stop() }
+        if channels.watch { PhoneWatchLink.shared.sendGuidance(phase: .idle) }
     }
 
     private func finish() {
@@ -249,6 +254,7 @@ final class TaskSession: ObservableObject {
     private func succeed(_ text: String) async {
         DebugLog.add("task done: \(text)")
         buzz(.confirmed)
+        if channels.watch { PhoneWatchLink.shared.sendGuidance(phase: .done) }
         outcome = .done
         tones.playSuccess()
         Haptics.success()
@@ -259,6 +265,7 @@ final class TaskSession: ObservableObject {
     private func fail(_ text: String) async {
         DebugLog.add("task failed: \(text)")
         buzz(.wrong)
+        if channels.watch { PhoneWatchLink.shared.sendGuidance(phase: .problem) }
         outcome = .problem
         tones.playError()
         Haptics.warning()
@@ -796,6 +803,7 @@ final class TaskSession: ObservableObject {
         defer {
             guidance.end()
             pipeline.setTarget(nil)
+            if channels.watch { PhoneWatchLink.shared.sendGuidance(phase: .working) }
         }
 
         let started = Date()
@@ -816,6 +824,16 @@ final class TaskSession: ObservableObject {
                 } else {
                     visual.mode = .working
                     visual.word = ""
+                }
+            }
+            if channels.watch {
+                switch snapshot.phase {
+                case .onTarget:
+                    PhoneWatchLink.shared.sendGuidance(phase: .tap, closeness: 1, word: "Tap")
+                case .aboveTarget, .seeking, .idle:
+                    let closeness = snapshot.distance.map { 1 - min($0 / 0.12, 1) }
+                    PhoneWatchLink.shared.sendGuidance(phase: .seeking, closeness: closeness,
+                                                       direction: snapshot.offset, word: visual.word)
                 }
             }
             if snapshot.hasArrived {

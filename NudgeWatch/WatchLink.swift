@@ -25,6 +25,7 @@ final class WatchLink: NSObject, ObservableObject, WCSessionDelegate {
         case .ping:
             device.play(.notification)
         case .approach:
+            // No longer sent: the Watch times the approach beat itself. Kept for older builds.
             device.play(.click)
         case .onTarget:
             device.play(.success)
@@ -39,6 +40,18 @@ final class WatchLink: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     private func handle(_ message: [String: Any]) {
+        if let name = message[WatchMessageKey.phase] as? String, let phase = WatchPhase(rawValue: name) {
+            let closeness = message[WatchMessageKey.closeness] as? Double
+            var direction: CGVector?
+            if let dx = message[WatchMessageKey.directionX] as? Double, let dy = message[WatchMessageKey.directionY] as? Double {
+                direction = CGVector(dx: dx, dy: dy)
+            }
+            let word = message[WatchMessageKey.word] as? String ?? ""
+            DispatchQueue.main.async {
+                WatchGuidance.shared.update(phase: phase, closeness: closeness, direction: direction, word: word)
+            }
+            return
+        }
         guard let raw = message[WatchMessageKey.haptic] as? String,
               let command = HapticCommand(rawValue: raw) else { return }
         play(command)
