@@ -83,6 +83,10 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     private var stableRun: [ScreenCandidate] = []
     /// Running estimate of how far LiDAR places the screen from the anchored plane (metres).
     private var surfaceOffset: Float?
+    /// Where the camera's hand tracker last saw a hand (raw image coordinates), and when.
+    private var lastHandBox: CGRect?
+    private var lastHandTime: TimeInterval = 0
+    private var depthHandStreak = 0
     private var validationCompletions: [(Bool) -> Void] = []
     private var readCompletions: [(ScreenReading?, CGImage?) -> Void] = []
 
@@ -290,11 +294,23 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
             if let tip = detection.fingertip {
                 fingerState = locateFinger(tip, on: anchor, frame: frame, geometry: geometry)
             }
-            // When the camera's hand tracker has nothing, or only a shaky guess, ask LiDAR where
-            // the hand is. A confident fingertip is always trusted over this.
+            // When the camera's hand tracker sees a hand but not its fingertip (or only a shaky
+            // guess at it), ask LiDAR which part of that hand is nearest the glass. Never without
+            // a sighting of a hand: depth alone cannot tell a hand from a laptop's base or a handle.
+            if let box = detection.handBox {
+                lastHandBox = box
+                lastHandTime = frame.timestamp
+            }
             let weak = (detection.fingertip?.confidence ?? 0) < 0.5
+            var depthHand: DepthHandFinder.Result?
             if usesDepthFallback, weak, let depthData = frame.sceneDepth,
-               let hand = handFinder.find(depthData: depthData, anchor: anchor, geometry: geometry) {
+               let searchBox = handSearchBox(at: frame.timestamp) {
+                depthHand = handFinder.find(depthData: depthData, anchor: anchor, geometry: geometry,
+                                            searchBox: searchBox)
+            }
+            // It has to hold for a few frames in a row before it is believed.
+            depthHandStreak = depthHand == nil ? 0 : depthHandStreak + 1
+            if let hand = depthHand, depthHandStreak >= 3 {
                 var useDepth = fingerState == nil
                 if let seen = fingerState {
                     // A shaky fingertip that LiDAR places somewhere else on the screen is a wrong guess.
@@ -613,6 +629,15 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         guard heights.count >= 3 else { return nil }
         heights.sort()
         return heights[heights.count / 2]
+    }
+
+    /// The part of the picture where LiDAR may look for the hand: around where the camera sees a
+    /// hand now, or saw one within the last half second. Nil when no hand has been seen.
+    private func handSearchBox(at timestamp: TimeInterval) -> CGRect? {
+        guard let box = lastHandBox, timestamp - lastHandTime < 0.5 else { return nil }
+        // Room for a fingertip the tracker could not make out, just beyond the joints it could.
+        let pad = max(0.04, max(box.width, box.height) * 0.3)
+        return box.insetBy(dx: -pad, dy: -pad)
     }
 
     /// Turns a LiDAR-only hand position into the same form as a seen fingertip.

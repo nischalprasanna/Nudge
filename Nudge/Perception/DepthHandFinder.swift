@@ -27,9 +27,14 @@ struct DepthHandFinder {
 
     /// `depth` returns metres along the camera axis for a depth-map pixel; `confidence` returns
     /// 0 (low), 1 (medium) or 2 (high). `width` and `height` are the depth map's size in pixels.
+    ///
+    /// `searchBox` is where the camera's hand tracker sees a hand, in normalized raw image
+    /// coordinates. Only that part of the picture can be reported. Depth alone cannot tell a hand
+    /// from anything else that stands out from the screen (a laptop's base, a door handle, a
+    /// shelf), so the caller should always pass one.
     func find(width: Int, height: Int, depth: (_ x: Int, _ y: Int) -> Float,
               confidence: (_ x: Int, _ y: Int) -> UInt8,
-              anchor: ScreenAnchor, geometry: FrameGeometry) -> Result? {
+              anchor: ScreenAnchor, geometry: FrameGeometry, searchBox: CGRect? = nil) -> Result? {
         // Region of the depth map to scan: the anchored screen as it appears now, plus a margin.
         let corners = anchor.corners.compactMap { geometry.project($0) }
         guard corners.count == 4 else { return nil }
@@ -59,6 +64,7 @@ struct DepthHandFinder {
         var down = [Float](repeating: .nan, count: count)
         var above = [Float](repeating: .nan, count: count)
         var trusted = [Bool](repeating: false, count: count)
+        var eligible = [Bool](repeating: false, count: count)
         var screenHeights: [Float] = []
         screenHeights.reserveCapacity(count / 2)
 
@@ -78,6 +84,14 @@ struct DepthHandFinder {
                 down[index] = p.y
                 above[index] = p.z
                 trusted[index] = confidence(x, y) >= 1
+                // The reported point has to be over the screen itself (things beside the screen,
+                // such as the base of a laptop, are not), and where a hand was seen.
+                var allowed = p.x >= 0.01 && p.x <= 0.99 && p.y >= 0.01 && p.y <= 0.99
+                if allowed, let searchBox {
+                    allowed = searchBox.contains(CGPoint(x: (CGFloat(x) + 0.5) / CGFloat(width),
+                                                         y: (CGFloat(y) + 0.5) / CGFloat(height)))
+                }
+                eligible[index] = allowed
                 if abs(p.z) < 0.03, p.x >= 0, p.x <= 1, p.y >= 0, p.y <= 1 { screenHeights.append(p.z) }
             }
         }
@@ -102,7 +116,7 @@ struct DepthHandFinder {
         for y in 1..<(regionHeight - 1) {
             for x in 1..<(regionWidth - 1) {
                 let index = y * regionWidth + x
-                guard isHand[index] else { continue }
+                guard isHand[index], eligible[index] else { continue }
                 var neighbours = 0
                 for dy in -1...1 {
                     for dx in -1...1 where !(dx == 0 && dy == 0) {

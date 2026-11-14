@@ -77,8 +77,10 @@ final class FrameDetectors {
         return request
     }()
 
-    /// `screens` holds every outline found, best first.
-    func detect(pixelBuffer: CVPixelBuffer, wantScreen: Bool) -> (fingertip: FingertipDetection?, screens: [ScreenCandidate]) {
+    /// `screens` holds every outline found, best first. `handBox` is where a hand is in view
+    /// (raw image coordinates), whether or not its fingertip can be made out.
+    func detect(pixelBuffer: CVPixelBuffer, wantScreen: Bool)
+        -> (fingertip: FingertipDetection?, handBox: CGRect?, screens: [ScreenCandidate]) {
         // .right turns the landscape camera image upright for a phone held in portrait.
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right, options: [:])
         var requests: [VNRequest] = [handRequest]
@@ -89,9 +91,22 @@ final class FrameDetectors {
         do {
             try handler.perform(requests)
         } catch {
-            return (nil, [])
+            return (nil, nil, [])
         }
-        return (fingertip(), wantScreen ? screens() : [])
+        return (fingertip(), handBox(), wantScreen ? screens() : [])
+    }
+
+    /// The area covered by the hand joints the tracker is reasonably sure of.
+    private func handBox() -> CGRect? {
+        guard let hand = handRequest.results?.first,
+              let joints = try? hand.recognizedPoints(.all) else { return nil }
+        let seen = joints.values
+            .filter { $0.confidence > 0.3 }
+            .map { FrameGeometry.raw(fromVisionPortrait: $0.location) }
+        guard seen.count >= 4 else { return nil }
+        let xs = seen.map(\.x), ys = seen.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(), let minY = ys.min(), let maxY = ys.max() else { return nil }
+        return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
     private func fingertip() -> FingertipDetection? {

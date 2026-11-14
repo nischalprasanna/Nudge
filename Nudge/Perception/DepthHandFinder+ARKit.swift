@@ -2,7 +2,7 @@ import ARKit
 
 extension DepthHandFinder {
     /// Runs the finder on one frame of LiDAR depth.
-    func find(depthData: ARDepthData, anchor: ScreenAnchor, geometry: FrameGeometry) -> Result? {
+    func find(depthData: ARDepthData, anchor: ScreenAnchor, geometry: FrameGeometry, searchBox: CGRect?) -> Result? {
         let map = depthData.depthMap
         guard CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32 else { return nil }
         CVPixelBufferLockBaseAddress(map, .readOnly)
@@ -33,6 +33,6 @@ extension DepthHandFinder {
                         guard let confidenceBase else { return 2 }
                         return confidenceBase.advanced(by: y * confidenceRowBytes).assumingMemoryBound(to: UInt8.self)[x]
                     },
-                    anchor: anchor, geometry: geometry)
+                    anchor: anchor, geometry: geometry, searchBox: searchBox)
     }
 }
