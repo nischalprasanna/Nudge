@@ -5,4 +5,4 @@
 cd "$(dirname "$0")"
 P=../../Nudge/Perception
 swiftc -O -o replay main.swift Track.swift $P/FrameGeometry.swift $P/ScreenAnchor.swift
-swiftc -O -o depthview depthview/main.swift Track.swift $P/FrameGeometry.swift $P/ScreenAnchor.swift
+swiftc -O -o depthview depth/main.swift Track.swift $P/FrameGeometry.swift $P/ScreenAnchor.swift
