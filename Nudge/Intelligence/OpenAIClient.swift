@@ -39,8 +39,10 @@ struct OpenAIClient: JSONModelClient {
         guard !trimmed.isEmpty, trimmed != "paste-your-key-here" else { return nil }
         apiKey = trimmed
         let configuration = URLSessionConfiguration.ephemeral
-        configuration.timeoutIntervalForRequest = 10
-        configuration.timeoutIntervalForResource = 12
+        // A request with a picture attached takes 4 to 6 seconds on a good day. The old limit of
+        // 10 cut those off, and the automatic second try doubled the wait.
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 22
         configuration.waitsForConnectivity = false
         session = URLSession(configuration: configuration)
     }
@@ -94,6 +96,9 @@ struct OpenAIClient: JSONModelClient {
                 throw error
             } catch is CancellationError {
                 throw CancellationError()
+            } catch let error as URLError where error.code == .timedOut {
+                // Trying again after a timeout only makes the user wait twice as long.
+                throw error
             } catch {
                 lastError = error
             }

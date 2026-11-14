@@ -231,13 +231,19 @@ struct TaskView: View {
 private struct CameraPane: View {
     @ObservedObject var pipeline: PerceptionPipeline
 
+    private var debugLine: String {
+        if !pipeline.searchInfo.isEmpty { return pipeline.searchInfo }
+        return pipeline.status.hasPrefix("Read ") ? pipeline.status : ""
+    }
+
     var body: some View {
         ZStack(alignment: .bottom) {
             ARPreview(session: pipeline.session)
             OverlayCanvas(overlay: pipeline.overlay, imageAspect: pipeline.portraitAspect)
             // While searching: what the finder sees, so a screen recording shows why it is stuck.
-            if !pipeline.searchInfo.isEmpty {
-                Text(pipeline.searchInfo)
+            // After a read: how many labels were found.
+            if !debugLine.isEmpty {
+                Text(debugLine)
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(Theme.paper)
                     .padding(.horizontal, 10)

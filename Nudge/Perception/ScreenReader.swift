@@ -31,13 +31,71 @@ final class ScreenReader {
     }
 
     /// Reads every piece of text in a rectified screen image. Runs entirely on the device.
+    ///
+    /// A big image is also read in overlapping quarters. Vision shrinks what it is given before
+    /// looking for text, so the small print on a keypad that fills only part of the picture is
+    /// lost in a single pass over the whole thing; each quarter keeps its detail.
     func readText(in image: CGImage) -> [ScreenElement] {
+        let whole = CGRect(x: 0, y: 0, width: 1, height: 1)
+        var regions = [whole]
+        let columns = image.width >= 1500 ? 2 : 1
+        let rows = image.height >= 1500 ? 2 : 1
+        if columns * rows > 1 {
+            // Each piece covers a little more than half, so a label on the join is whole in one of them.
+            let span: CGFloat = 0.57
+            for row in 0..<rows {
+                for column in 0..<columns {
+                    regions.append(CGRect(x: columns == 1 ? 0 : (column == 0 ? 0 : 1 - span),
+                                          y: rows == 1 ? 0 : (row == 0 ? 0 : 1 - span),
+                                          width: columns == 1 ? 1 : span,
+                                          height: rows == 1 ? 1 : span))
+                }
+            }
+        }
+
+        var passes = [[ScreenElement]](repeating: [], count: regions.count)
+        passes.withUnsafeMutableBufferPointer { buffer in
+            let results = buffer
+            DispatchQueue.concurrentPerform(iterations: regions.count) { index in
+                results[index] = self.recognize(image, region: regions[index])
+            }
+        }
+
+        // The same label can turn up in several passes. Keep the fullest version of each:
+        // largest box first, then drop anything that mostly lies inside one already kept.
+        var kept: [ScreenElement] = []
+        for element in passes.joined().sorted(by: { $0.box.width * $0.box.height > $1.box.width * $1.box.height }) {
+            let area = element.box.width * element.box.height
+            let duplicate = kept.contains { other in
+                let overlap = other.box.intersection(element.box)
+                return !overlap.isNull && overlap.width * overlap.height > 0.4 * area
+            }
+            if !duplicate { kept.append(element) }
+        }
+
+        let elements = Self.mergeStacked(kept, imageWidth: CGFloat(image.width), imageHeight: CGFloat(image.height))
+
+        // Reading order: top to bottom in rows, then left to right.
+        return elements.sorted { a, b in
+            if abs(a.box.midY - b.box.midY) > 0.04 { return a.box.midY < b.box.midY }
+            return a.box.midX < b.box.midX
+        }
+    }
+
+    /// Reads the text in one part of the image. `region` is normalized with the origin at the
+    /// top-left; the boxes returned are positions in the whole image.
+    private func recognize(_ full: CGImage, region: CGRect) -> [ScreenElement] {
+        let pixels = CGRect(x: region.minX * CGFloat(full.width), y: region.minY * CGFloat(full.height),
+                            width: region.width * CGFloat(full.width), height: region.height * CGFloat(full.height)).integral
+        guard let image = region.width >= 1 && region.height >= 1 ? full : full.cropping(to: pixels) else { return [] }
+
         let request = VNRecognizeTextRequest()
         request.recognitionLevel = .accurate
         // Button labels are short ("30 SEC", "+1 MIN"); dictionary correction makes them worse.
         request.usesLanguageCorrection = false
         request.automaticallyDetectsLanguage = true
-        request.minimumTextHeight = 0.015
+        // Low enough to keep the small print on a keypad seen from arm's length.
+        request.minimumTextHeight = 0.006
 
         let handler = VNImageRequestHandler(cgImage: image, options: [:])
         guard (try? handler.perform([request])) != nil, let observations = request.results else { return [] }
@@ -85,20 +143,16 @@ final class ScreenReader {
             }
 
             for group in groups {
-                // Vision's origin is bottom-left; screen coordinates use top-left.
-                let box = CGRect(x: group.box.minX, y: 1 - group.box.maxY,
-                                 width: group.box.width, height: group.box.height)
+                // Vision's origin is bottom-left of the piece; screen coordinates use the
+                // top-left of the whole image.
+                let box = CGRect(x: region.minX + group.box.minX * region.width,
+                                 y: region.minY + (1 - group.box.maxY) * region.height,
+                                 width: group.box.width * region.width,
+                                 height: group.box.height * region.height)
                 elements.append(ScreenElement(label: group.text, box: box, confidence: best.confidence))
             }
         }
-
-        elements = Self.mergeStacked(elements, imageWidth: imageWidth, imageHeight: imageHeight)
-
-        // Reading order: top to bottom in rows, then left to right.
-        return elements.sorted { a, b in
-            if abs(a.box.midY - b.box.midY) > 0.04 { return a.box.midY < b.box.midY }
-            return a.box.midX < b.box.midX
-        }
+        return elements
     }
 
     /// Joins a label printed on two lines ("TIME" over "COOK") into one button name.
@@ -117,7 +171,11 @@ final class ScreenReader {
                 let gap = (lower.box.minY - upper.box.maxY) * imageHeight
                 let offset = abs(lower.box.midX - upper.box.midX) * imageWidth
                 let widest = max(upper.box.width, lower.box.width) * imageWidth
-                return gap > -0.3 * min(upperHeight, lowerHeight)
+                // Keypad digits sit in columns too ("4" over "7") and must stay separate buttons.
+                // Only words can be two lines of one name.
+                let words = upper.label.contains(where: \.isLetter) && lower.label.contains(where: \.isLetter)
+                return words
+                    && gap > -0.3 * min(upperHeight, lowerHeight)
                     && gap < 0.7 * min(upperHeight, lowerHeight)
                     && offset < 0.25 * widest
                     && max(upperHeight, lowerHeight) < 1.5 * min(upperHeight, lowerHeight)

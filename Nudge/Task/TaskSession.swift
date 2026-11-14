@@ -366,9 +366,17 @@ final class TaskSession: ObservableObject {
             sendImage = false
 
             let step: PlanStep
+            // Never leave the user in silence: say so if this is taking a while, and give up
+            // with a clear message rather than hang.
+            let reassure = Task { [speaker] in
+                try? await Task.sleep(nanoseconds: 4_000_000_000)
+                if !Task.isCancelled { speaker.say("Still working it out.") }
+            }
             do {
-                step = try await planner.nextStep(request)
+                step = try await Self.plan(with: planner, request, deadline: 25)
+                reassure.cancel()
             } catch {
+                reassure.cancel()
                 if Task.isCancelled { return }
                 await fail("I couldn't reach the planner. \(error.localizedDescription)")
                 return
@@ -596,8 +604,26 @@ final class TaskSession: ObservableObject {
     }
 
     /// Below this many readable labels, a picture of the screen is sent along with them.
+    private struct PlannerTooSlow: LocalizedError {
+        var errorDescription: String? { "It took too long to answer." }
+    }
+
+    /// Asks the planner for the next step, giving up after `deadline` seconds.
+    private static func plan(with planner: TaskPlanner, _ request: PlanRequest, deadline: Double) async throws -> PlanStep {
+        try await withThrowingTaskGroup(of: PlanStep.self) { group in
+            group.addTask { try await planner.nextStep(request) }
+            group.addTask {
+                try await Task.sleep(nanoseconds: UInt64(deadline * 1_000_000_000))
+                throw PlannerTooSlow()
+            }
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw PlannerTooSlow() }
+            return first
+        }
+    }
+
     private static var explainedHovering = false
-    private static let fewLabelsThreshold = 8
+    private static let fewLabelsThreshold = 5
     /// Fewer readable labels than this and the thing in view is not treated as a touchscreen.
     private static let fewestLabelsForAScreen = 3
 
