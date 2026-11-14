@@ -95,15 +95,31 @@ final class FrameDetectors {
     }
 
     private func fingertip() -> FingertipDetection? {
-        guard let hand = handRequest.results?.first,
-              let tip = try? hand.recognizedPoint(.indexTip),
-              tip.confidence > 0.2 else { return nil }
-        var previous: CGPoint?
-        if let joint = try? hand.recognizedPoint(.indexDIP), joint.confidence > 0.2 {
-            previous = FrameGeometry.raw(fromVisionPortrait: joint.location)
+        guard let hand = handRequest.results?.first else { return nil }
+        let tip = try? hand.recognizedPoint(.indexTip)
+        let lastJoint = try? hand.recognizedPoint(.indexDIP)
+        let middleJoint = try? hand.recognizedPoint(.indexPIP)
+
+        if let tip, tip.confidence > 0.2 {
+            var previous: CGPoint?
+            if let lastJoint, lastJoint.confidence > 0.2 {
+                previous = FrameGeometry.raw(fromVisionPortrait: lastJoint.location)
+            }
+            return FingertipDetection(point: FrameGeometry.raw(fromVisionPortrait: tip.location),
+                                      confidence: tip.confidence, previousJoint: previous)
         }
-        return FingertipDetection(point: FrameGeometry.raw(fromVisionPortrait: tip.location),
-                                  confidence: tip.confidence, previousJoint: previous)
+
+        // The tip itself is hidden or blurred, but the two joints behind it are clear:
+        // the tip lies a little further along the same line.
+        if let lastJoint, let middleJoint, lastJoint.confidence > 0.3, middleJoint.confidence > 0.3 {
+            let estimate = CGPoint(x: lastJoint.location.x + (lastJoint.location.x - middleJoint.location.x) * 0.9,
+                                   y: lastJoint.location.y + (lastJoint.location.y - middleJoint.location.y) * 0.9)
+            guard (0...1).contains(estimate.x), (0...1).contains(estimate.y) else { return nil }
+            return FingertipDetection(point: FrameGeometry.raw(fromVisionPortrait: estimate),
+                                      confidence: 0.25,
+                                      previousJoint: FrameGeometry.raw(fromVisionPortrait: lastJoint.location))
+        }
+        return nil
     }
 
     /// Ranks outlines so that the one most likely to be the control panel comes first:

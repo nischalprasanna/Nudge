@@ -33,6 +33,8 @@ struct FingerState: Equatable {
         case lidar
         /// Camera ray through the fingertip hitting the glass (no hover height, has parallax when hovering).
         case ray
+        /// The fingertip was not visible; this is the part of the hand nearest the glass, from LiDAR alone.
+        case depthHand
     }
 
     /// Landing position on the screen, normalized 0...1, origin top-left. Can fall outside 0...1.

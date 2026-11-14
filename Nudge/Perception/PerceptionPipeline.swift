@@ -16,6 +16,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         var candidate: [CGPoint] = []
         var anchored: [CGPoint] = []
         var fingertip: CGPoint?
+        /// True when the fingertip was not seen directly and its position comes from LiDAR alone.
+        var fingertipEstimated = false
         var target: CGPoint?
     }
 
@@ -53,6 +55,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     private let ocrQueue = DispatchQueue(label: "nudge.ocr", qos: .userInitiated)
 
     private let detectors = FrameDetectors()
+    private let handFinder = DepthHandFinder()
+    /// Use LiDAR alone to place the hand when the camera cannot see the fingertip.
+    var usesDepthFallback = true
     private let reader = ScreenReader()
 
     /// Only touched on `arQueue`.
@@ -279,8 +284,30 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         }
 
         var fingerState: FingerState?
-        if let anchor, let tip = detection.fingertip {
-            fingerState = locateFinger(tip, on: anchor, frame: frame, geometry: geometry)
+        var pointerInImage = detection.fingertip?.point
+        var pointerEstimated = false
+        if let anchor {
+            if let tip = detection.fingertip {
+                fingerState = locateFinger(tip, on: anchor, frame: frame, geometry: geometry)
+            }
+            // When the camera's hand tracker has nothing, or only a shaky guess, ask LiDAR where
+            // the hand is. A confident fingertip is always trusted over this.
+            let weak = (detection.fingertip?.confidence ?? 0) < 0.5
+            if usesDepthFallback, weak, let depthData = frame.sceneDepth,
+               let hand = handFinder.find(depthData: depthData, anchor: anchor, geometry: geometry) {
+                var useDepth = fingerState == nil
+                if let seen = fingerState {
+                    // A shaky fingertip that LiDAR places somewhere else on the screen is a wrong guess.
+                    let dx = Float(seen.uv.x - hand.uv.x) * anchor.width
+                    let dy = Float(seen.uv.y - hand.uv.y) * anchor.height
+                    useDepth = (dx * dx + dy * dy).squareRoot() > 0.03
+                }
+                if useDepth {
+                    fingerState = makeFingerState(from: hand, timestamp: frame.timestamp)
+                    pointerInImage = hand.imagePoint
+                    pointerEstimated = true
+                }
+            }
         }
         if fingerState == nil { resetSmoothing() }
         onFinger?(fingerState)
@@ -300,8 +327,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         } else if let candidate = lastCandidate {
             newOverlay.candidate = candidate.corners.map(FrameGeometry.portrait(fromRaw:))
         }
-        if let tip = detection.fingertip {
-            newOverlay.fingertip = FrameGeometry.portrait(fromRaw: tip.point)
+        if let pointerInImage {
+            newOverlay.fingertip = FrameGeometry.portrait(fromRaw: pointerInImage)
+            newOverlay.fingertipEstimated = pointerEstimated
         }
         if let anchor, let targetUV,
            let raw = geometry.project(anchor.world(u: Float(targetUV.x), v: Float(targetUV.y))) {
@@ -585,6 +613,19 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         guard heights.count >= 3 else { return nil }
         heights.sort()
         return heights[heights.count / 2]
+    }
+
+    /// Turns a LiDAR-only hand position into the same form as a seen fingertip.
+    private func makeFingerState(from hand: DepthHandFinder.Result, timestamp: TimeInterval) -> FingerState {
+        // Steadier smoothing than for a seen fingertip: this estimate is coarser.
+        let rawUV = simd_float2(Float(hand.uv.x), Float(hand.uv.y))
+        let filteredUV = smoothedUV.map { $0 * 0.65 + rawUV * 0.35 } ?? rawUV
+        smoothedUV = filteredUV
+        let hover = max(0, hand.height - fingerThickness)
+        smoothedHover = smoothedHover.map { $0 * 0.6 + hover * 0.4 } ?? hover
+        return FingerState(uv: CGPoint(x: CGFloat(filteredUV.x), y: CGFloat(filteredUV.y)),
+                           hoverMeters: smoothedHover, method: .depthHand,
+                           confidence: 0.4, timestamp: timestamp)
     }
 
     private func resetSmoothing() {
