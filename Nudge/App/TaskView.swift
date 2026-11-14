@@ -232,9 +232,20 @@ private struct CameraPane: View {
     @ObservedObject var pipeline: PerceptionPipeline
 
     var body: some View {
-        ZStack {
+        ZStack(alignment: .bottom) {
             ARPreview(session: pipeline.session)
             OverlayCanvas(overlay: pipeline.overlay, imageAspect: pipeline.portraitAspect)
+            // While searching: what the finder sees, so a screen recording shows why it is stuck.
+            if !pipeline.searchInfo.isEmpty {
+                Text(pipeline.searchInfo)
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(Theme.paper)
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .background(Theme.ink.opacity(0.7), in: Capsule())
+                    .padding(.bottom, 12)
+                    .accessibilityHidden(true)
+            }
         }
     }
 }

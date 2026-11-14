@@ -182,7 +182,8 @@ final class TaskSession: ObservableObject {
     private func logAttempt(stopped: Bool) {
         guard let started = attemptStarted else { return }
         attemptStarted = nil
-        guard !goal.isEmpty else { return }
+        // Attempts that never reached a goal are kept too: they show where the start goes wrong.
+        let goal = self.goal.isEmpty ? "(no goal reached)" : self.goal
         let result: String
         if stopped { result = "stopped" } else { result = outcome == .done ? "success" : "failed" }
         var on: [String] = []
@@ -266,49 +267,63 @@ final class TaskSession: ObservableObject {
         // The camera looks for the screen from the moment this page opens. If the outline it
         // already has is still on a screen in view, use it and start at once. Otherwise look
         // afresh: an outline left over from earlier may no longer be on the screen.
-        var first: (reading: ScreenReading, image: CGImage)?
-        for attempt in 0..<3 {
-            phase = .findingScreen
-            var reused = false
-            if attempt == 0, pipeline.isAnchored { reused = await pipeline.anchorStillValid() }
-            if !reused {
-                guidance.resetHeightCalibration()
-                pipeline.clearAnchor()
-                _ = await waitUntil(timeout: 1) { !self.pipeline.isAnchored }
-                // Not awaited: the search runs while this is being said, and carries on as soon as it succeeds.
-                if attempt == 0 { speaker.say("Point the phone at the touchscreen.") }
-                var found = await waitUntil(timeout: 10) { self.pipeline.isAnchored }
-                if !found, !Task.isCancelled {
-                    // No outline with labels in it. Accept the middle of the view instead, as
-                    // soon as there is something to read there, and give the user time to line up.
-                    pipeline.anchorNow(requireText: true)
-                    speaker.say("Still looking. Face the touchscreen from about an arm's length away.")
-                    found = await waitUntil(timeout: 30) { self.pipeline.isAnchored }
-                }
-                guard found else {
-                    pipeline.clearAnchor()
-                    if !Task.isCancelled {
-                        await fail("I couldn't find a touchscreen. Face it from about an arm's length away and try again.")
-                    }
-                    return
-                }
-                // Let the outline settle for a moment before reading.
-                try? await Task.sleep(nanoseconds: 300_000_000)
-            }
-            if Task.isCancelled { return }
+        //
+        // What counts as a touchscreen is settled by reading it: a candidate with fewer than
+        // three readable labels (a desk, a door) is dropped without comment and the search goes on.
+        phase = .findingScreen
+        pipeline.clearRejections()
+        pipeline.setRelaxedSearch(false)
+        var reused = false
+        if pipeline.isAnchored { reused = await pipeline.anchorStillValid() }
+        if !reused {
+            guidance.resetHeightCalibration()
+            pipeline.clearAnchor()
+            _ = await waitUntil(timeout: 1) { !self.pipeline.isAnchored }
+            // Not awaited: the search runs while this is being said.
+            speaker.say("Point the phone at the touchscreen.")
+        }
 
+        var first: (reading: ScreenReading, image: CGImage)?
+        let searchStarted = Date()
+        var askedForMiddle = false
+        var saidStillLooking = false
+        while !Task.isCancelled {
+            let elapsed = Date().timeIntervalSince(searchStarted)
+            if elapsed > 50 { break }
+            if !pipeline.isAnchored {
+                phase = .findingScreen
+                // First choice: an outline with labels in it. After a few seconds, any steady
+                // outline; later still, the middle of the view if there is text there.
+                pipeline.setRelaxedSearch(elapsed > 4)
+                if elapsed > 10, !askedForMiddle {
+                    askedForMiddle = true
+                    pipeline.anchorNow(requireText: true)
+                }
+                if elapsed > 12, !saidStillLooking {
+                    saidStillLooking = true
+                    speaker.say("Still looking. Face the touchscreen from about an arm's length away.")
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+                continue
+            }
+            // Let the outline settle for a moment before reading.
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if Task.isCancelled { return }
             phase = .reading
-            guard let result = await readScreen() else { return }
-            // A touchscreen has labels. Next to nothing readable means this is something else.
-            if result.reading.elements.count >= Self.fewestLabelsForAScreen {
+            if let result = await pipeline.readScreenNow(),
+               result.reading.elements.count >= Self.fewestLabelsForAScreen {
                 first = result
                 break
             }
-            if attempt < 2 { await speaker.sayAndWait("That doesn't look like a touchscreen. Looking again.") }
+            pipeline.rejectAnchor()
+            askedForMiddle = false
+            _ = await waitUntil(timeout: 1) { !self.pipeline.isAnchored }
         }
+        pipeline.setRelaxedSearch(false)
         guard var current = first else {
+            pipeline.clearAnchor()
             if !Task.isCancelled {
-                await fail("I couldn't find a touchscreen with buttons I can read, so I've stopped.")
+                await fail("I couldn't find a touchscreen. Face it from about an arm's length away and try again.")
             }
             return
         }

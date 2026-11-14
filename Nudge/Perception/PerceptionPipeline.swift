@@ -34,6 +34,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     @Published private(set) var framesPerSecond: Double = 0
     @Published private(set) var portraitAspect: CGFloat = 0.75
     @Published private(set) var screenSizeText = ""
+    /// What the screen search can see right now, for the line under the camera view.
+    @Published private(set) var searchInfo = ""
     /// Physical size of the anchored screen in metres.
     @Published private(set) var screenSize: CGSize?
 
@@ -70,6 +72,10 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     private var frameIndex = 0
     private var wantsAnchorNow = false
     private var forcedAnchorNeedsText = false
+    private var acceptsTextlessOutlines = false
+    /// Outlines that were read and found not to be a touchscreen, with when (system uptime).
+    private var rejected: [(anchor: ScreenAnchor, at: TimeInterval)] = []
+    private var lastSearchInfo = ""
     private var wantsReadFromNextFrame = false
     private var smoothedUV: simd_float2?
     private var smoothedHover: Float?
@@ -129,6 +135,28 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
             self.wantsAnchorNow = true
             self.forcedAnchorNeedsText = requireText
         }
+    }
+
+    /// After a few seconds without finding an outline that holds labels, the task lets any
+    /// steady outline through. Whether it really is a touchscreen is then settled by reading it.
+    func setRelaxedSearch(_ relaxed: Bool) {
+        visionQueue.async { self.acceptsTextlessOutlines = relaxed }
+    }
+
+    /// The current outline turned out not to be a touchscreen (nothing readable on it). Drop it
+    /// and do not pick the same outline again for a few seconds.
+    func rejectAnchor() {
+        visionQueue.async {
+            if let anchor = self.anchor {
+                self.rejected.append((anchor, ProcessInfo.processInfo.systemUptime))
+                if self.rejected.count > 6 { self.rejected.removeFirst() }
+            }
+        }
+        clearAnchor()
+    }
+
+    func clearRejections() {
+        visionQueue.async { self.rejected = [] }
     }
 
     func clearAnchor() {
@@ -288,8 +316,23 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         if findScreen {
             // Only an outline with labels inside it can be a touchscreen. Without that rule the
             // biggest rectangle in view wins, and that is often a desk, a door or a window.
-            var candidate = detection.screens.first(where: \.hasText)
-            if candidate == nil, wantsAnchorNow, !forcedAnchorNeedsText { candidate = detection.screens.first }
+            // Leave out outlines that were read a moment ago and had nothing on them.
+            let now = ProcessInfo.processInfo.systemUptime
+            rejected.removeAll { now - $0.at > 6 }
+            let ruledOut: [ScreenCandidate] = rejected.compactMap { item in
+                let projected = item.anchor.corners.compactMap { geometry.project($0) }
+                guard projected.count == 4 else { return nil }
+                return ScreenCandidate(topLeft: projected[0], topRight: projected[1],
+                                       bottomRight: projected[2], bottomLeft: projected[3], confidence: 1)
+            }
+            let usable = detection.screens.filter { screen in
+                !ruledOut.contains { $0.maxCornerDistance(to: screen) < 0.08 }
+            }
+            var candidate = usable.first(where: \.hasText)
+            if candidate == nil, acceptsTextlessOutlines || (wantsAnchorNow && !forcedAnchorNeedsText) {
+                candidate = usable.first
+            }
+            lastSearchInfo = "Outlines \(detection.screens.count), with text \(detection.screens.filter(\.hasText).count), text in middle \(detection.centerText)"
             updateCandidate(candidate, centerText: detection.centerText, frame: frame, geometry: geometry)
         } else if trackScreen, detection.fingertip == nil {
             // Only while no hand is in view: a hand hides edges and gives misleading outlines.
@@ -362,7 +405,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         }
         let fps = smoothedFPS
         let aspect = geometry.portraitAspect
+        let info = anchor == nil ? lastSearchInfo : ""
         DispatchQueue.main.async {
+            if self.searchInfo != info { self.searchInfo = info }
             self.overlay = newOverlay
             self.finger = fingerState
             self.framesPerSecond = fps
