@@ -13,6 +13,7 @@ struct SettingsView: View {
     @AppStorage("channel.watch") private var watch = true
     @AppStorage("wornOnChest") private var wornOnChest = false
     @AppStorage("marker.on") private var markerOn = false
+    @AppStorage(TrackRecorder.settingKey) private var recordTracking = true
 
     private var plannerName: String {
         CloudPlanner.fromConfiguredKeys()?.name ?? "Not set up (no key in this build)"
@@ -93,6 +94,7 @@ struct SettingsView: View {
                     NavigationLink("Camera and tracking test") {
                         PerceptionTestView()
                     }
+                    Toggle("Record tracking frames", isOn: $recordTracking)
                     Button("Send a test tap to the watch") {
                         Haptics.tap()
                         watchLink.send(.ping)
@@ -100,7 +102,7 @@ struct SettingsView: View {
                 } header: {
                     Text("Test tools")
                 } footer: {
-                    Text("For checking the camera, finger tracking and watch link.")
+                    Text("For checking the camera, finger tracking and watch link. Recording keeps the camera pictures from the last task on this phone, for copying to a Mac over the cable. Nothing is sent anywhere. Leave it off for normal use.")
                 }
             }
             .confirmationDialog("Clear every recorded attempt?", isPresented: $confirmClear, titleVisibility: .visible) {

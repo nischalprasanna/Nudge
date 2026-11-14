@@ -68,6 +68,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     /// Off: on the phone it overrode correct but low-confidence fingertips with the knuckle or
     /// another part of the hand, which made the pointer jump. Tracking was steadier without it.
     var usesDepthFallback = false
+    /// Test tool: keeps camera frames while guiding, for measuring tracking changes on a Mac.
+    let recorder = TrackRecorder()
+    private var loggedFormats = false
     private let reader = ScreenReader()
 
     /// Only touched on `arQueue`.
@@ -155,6 +158,14 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
             config.videoFormat = format
         }
         hasLiDAR = lidar
+        recorder.begin()
+        if !loggedFormats {
+            loggedFormats = true
+            let formats = ARWorldTrackingConfiguration.supportedVideoFormats.map {
+                "\($0.captureDeviceType.rawValue.replacingOccurrences(of: "AVCaptureDeviceTypeBuiltIn", with: "")) \(Int($0.imageResolution.width))x\(Int($0.imageResolution.height))@\($0.framesPerSecond)"
+            }
+            DebugLog.add("camera: using \(Int(config.videoFormat.imageResolution.width))x\(Int(config.videoFormat.imageResolution.height)); offered: \(formats.joined(separator: ", "))")
+        }
         session.delegate = self
         session.delegateQueue = arQueue
         session.run(config, options: [.resetTracking, .removeExistingAnchors])
@@ -163,6 +174,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
 
     func stop() {
         session.pause()
+        recorder.end()
     }
 
     // MARK: Commands (call from any thread)
@@ -580,6 +592,23 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                     guard let hit = anchor.intersect(rayOrigin: ray.origin, direction: ray.direction) else { return nil }
                     return anchor.locate(hit).uv
                 }
+        }
+        if let anchor, let targetUV, recorder.isOn {
+            func pair(_ p: CGPoint?) -> Any { p.map { [$0.x, $0.y] as Any } ?? NSNull() }
+            var info: [String: Any] = [
+                "anchor": anchor.corners.flatMap { [$0.x, $0.y, $0.z] },
+                "target": [targetUV.x, targetUV.y],
+                "tip": pair(detection.fingertip?.point),
+                "tipConfidence": detection.fingertip?.confidence ?? 0,
+                "joint": pair(detection.fingertip?.previousJoint),
+                "uv": pair(fingerState?.uv),
+                "method": fingerState?.method.rawValue ?? "",
+                "hover": fingerState?.hoverMeters.map { $0 as Any } ?? NSNull(),
+            ]
+            if let box = detection.handBox {
+                info["handBox"] = [box.minX, box.minY, box.width, box.height]
+            }
+            recorder.record(frame: frame, info: info)
         }
         if targetUV != nil {
             let source = fingerState?.method
