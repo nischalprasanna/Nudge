@@ -93,7 +93,13 @@ final class GuidanceEngine {
     /// What is said when the finger is on the button and close enough to press it.
     var tapPhrase = "Tap."
     /// The finger pad must be within this height of the glass before "tap" is given (metres).
-    var tapHeight: Float = 0.035
+    var tapHeight: Float = 0.07
+    /// A reading higher than this is never a finger on the glass, however still it is held (metres).
+    var farHeight: Float = 0.10
+    /// Hold back "tap" while the finger is well away from the glass. LiDAR cannot tell touching
+    /// from a centimetre up, but it can tell a few centimetres from a foot, and without this
+    /// check "tap" was given to a finger pointing at the key from across the room.
+    var usesHeightGate = true
     /// Below this height while still far from the button, the user is told to lift (metres).
     var dragHeight: Float = 0.005
     /// Speak about height ("Closer.", "Lift.") and hold back "tap" until the finger is low.
@@ -156,6 +162,8 @@ final class GuidanceEngine {
         let tapHeight = self.tapHeight
         let dragHeight = self.dragHeight
         let usesHeightCues = self.usesHeightCues
+        let usesHeightGate = self.usesHeightGate
+        let farHeight = self.farHeight
 
         lock.withLockUnchecked { state in
             guard let target = state.target else { return }
@@ -244,7 +252,7 @@ final class GuidanceEngine {
                 // Over the button. Is the finger close enough to the glass to press it?
                 // If the height is unknown (no depth reading), assume it is.
                 var near = true
-                if usesHeightCues, let reported = finger.hoverMeters {
+                if usesHeightGate, let reported = finger.hoverMeters {
                     near = reported - state.touchHeight <= tapHeight
                     if near {
                         state.lowestAbove = nil
@@ -261,12 +269,10 @@ final class GuidanceEngine {
                             state.lowestAbove = reported
                             state.lastDescent = now
                         }
-                        if now - state.lastDescent > 1.2 {
-                            // Only learn from readings that could plausibly be a touch. A finger held
-                            // still well above the glass still gets its tap, but teaches nothing.
-                            if reported <= 0.06 {
-                                state.touchHeight = max(state.touchHeight, reported - 0.01)
-                            }
+                        // Only when the reading could plausibly be a touch. A finger held still in
+                        // mid-air, well away from the glass, does not get its tap.
+                        if now - state.lastDescent > 1.2, reported <= farHeight {
+                            state.touchHeight = max(state.touchHeight, reported - 0.01)
                             state.lowestAbove = nil
                             near = true
                         }
@@ -298,7 +304,7 @@ final class GuidanceEngine {
                         state.lastHeightPrompt = now
                         state.lastVoiceTime = now
                         state.lastVoiceText = "closer"
-                        say = "Closer."
+                        say = "Closer to the screen."
                     }
                 }
                 return

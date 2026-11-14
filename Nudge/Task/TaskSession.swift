@@ -96,7 +96,9 @@ final class TaskSession: ObservableObject {
             guard let self else { return }
             self.transcript.append(line)
             if self.transcript.count > 30 { self.transcript.removeFirst(self.transcript.count - 30) }
-            if Self.cueWords.contains(line) || line.hasPrefix("Tap") {
+            if line == "Closer to the screen." {
+                self.visual.word = "Closer"
+            } else if Self.cueWords.contains(line) || line.hasPrefix("Tap") {
                 self.visual.word = line.hasPrefix("Tap") ? "Tap" : String(line.dropLast())
             } else {
                 self.instruction = line
@@ -852,7 +854,11 @@ final class TaskSession: ObservableObject {
                 switch snapshot.phase {
                 case .onTarget:
                     PhoneWatchLink.shared.sendGuidance(phase: .tap, closeness: 1, word: "Tap")
-                case .aboveTarget, .seeking, .idle:
+                case .aboveTarget:
+                    // Lined up with the key but still well away from the glass: a steady middling
+                    // beat, not the rapid one that means "nearly there".
+                    PhoneWatchLink.shared.sendGuidance(phase: .seeking, closeness: 0.55, direction: .zero, word: "Closer")
+                case .seeking, .idle:
                     let closeness = snapshot.distance.map { 1 - min($0 / 0.12, 1) }
                     PhoneWatchLink.shared.sendGuidance(phase: .seeking, closeness: closeness,
                                                        direction: snapshot.offset, word: visual.word)
