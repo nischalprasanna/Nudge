@@ -15,3 +15,8 @@ xcuserdata/
 
 # macOS
 .DS_Store
+
+# Replay tool binaries
+Tools/track-replay/replay
+Tools/track-replay/depthview
+*.bin
