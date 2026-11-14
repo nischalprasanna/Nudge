@@ -53,6 +53,56 @@ struct FingertipDetection {
     var previousJoint: CGPoint?
 }
 
+/// Where the camera sees writing, taken as a whole. Positions are in the upright picture:
+/// x across from the left, y down from the top, each 0...1.
+struct TextSummary {
+    var count = 0
+    var center = CGPoint(x: 0.5, y: 0.5)
+    /// The area holding the bulk of the writing (the outer tenth on each side is left out, so a
+    /// stray word elsewhere does not stretch it).
+    var bounds = CGRect.zero
+}
+
+/// What to tell someone who cannot see the camera's view, so that the control panel ends up
+/// in the middle of it at a readable size.
+enum SearchHint: String {
+    /// Nothing useful to say: either the panel is well placed or nothing is known yet.
+    case none
+    case left, right, up, down, closer, back
+    /// No writing in view at all.
+    case nothingInView
+
+    var spoken: String? {
+        switch self {
+        case .none: return nil
+        case .left: return "Turn the phone a little to the left."
+        case .right: return "Turn the phone a little to the right."
+        case .up: return "Tilt the phone up a little."
+        case .down: return "Tilt the phone down a little."
+        case .closer: return "Move closer."
+        case .back: return "Move back a little."
+        case .nothingInView: return "I can't see any buttons yet. Slowly turn the phone from side to side."
+        }
+    }
+
+    /// Chooses a hint from where the writing is in the picture.
+    static func from(_ text: TextSummary) -> SearchHint {
+        guard text.count >= 4 else { return text.count == 0 ? .nothingInView : .none }
+        let b = text.bounds
+        // Running off the picture on opposite sides, or nearly filling it: too close to see it all.
+        if b.width > 0.9 || b.height > 0.9 { return .back }
+        // Off to one side: turn toward it. The larger offset is dealt with first.
+        let dx = text.center.x - 0.5, dy = text.center.y - 0.5
+        if abs(dx) > 0.17 || abs(dy) > 0.2 {
+            if abs(dx) / 0.17 >= abs(dy) / 0.2 { return dx < 0 ? .left : .right }
+            return dy < 0 ? .up : .down
+        }
+        // In the middle but small: the labels will be too small to read.
+        if max(b.width, b.height) < 0.22 { return .closer }
+        return .none
+    }
+}
+
 /// Runs the per-frame Vision requests: index fingertip (every frame) and screen outline (when asked).
 final class FrameDetectors {
     private let handRequest: VNDetectHumanHandPoseRequest = {
@@ -84,7 +134,7 @@ final class FrameDetectors {
     /// (raw image coordinates), whether or not its fingertip can be made out. `centerText` is
     /// how many pieces of text sit in the middle of the view.
     func detect(pixelBuffer: CVPixelBuffer, wantScreen: Bool)
-        -> (fingertip: FingertipDetection?, handBox: CGRect?, screens: [ScreenCandidate], centerText: Int) {
+        -> (fingertip: FingertipDetection?, handBox: CGRect?, screens: [ScreenCandidate], centerText: Int, text: TextSummary?) {
         // .right turns the landscape camera image upright for a phone held in portrait.
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right, options: [:])
         var requests: [VNRequest] = [handRequest]
@@ -95,9 +145,26 @@ final class FrameDetectors {
         do {
             try handler.perform(requests)
         } catch {
-            return (nil, nil, [], 0)
+            return (nil, nil, [], 0, nil)
         }
-        return (fingertip(), handBox(), wantScreen ? screens() : [], wantScreen ? centerText() : 0)
+        return (fingertip(), handBox(), wantScreen ? screens() : [], wantScreen ? centerText() : 0,
+                wantScreen ? textSummary() : nil)
+    }
+
+    /// Where the writing in view is, in the upright picture.
+    private func textSummary() -> TextSummary {
+        let boxes = textRequest.results ?? []
+        guard !boxes.isEmpty else { return TextSummary() }
+        // Vision's origin is the bottom-left of the upright picture; flip to top-left.
+        let xs = boxes.map { $0.boundingBox.midX }.sorted()
+        let ys = boxes.map { 1 - $0.boundingBox.midY }.sorted()
+        func pick(_ values: [CGFloat], _ fraction: Double) -> CGFloat {
+            values[min(values.count - 1, max(0, Int(Double(values.count - 1) * fraction)))]
+        }
+        let left = pick(xs, 0.1), right = pick(xs, 0.9), top = pick(ys, 0.1), bottom = pick(ys, 0.9)
+        return TextSummary(count: boxes.count,
+                           center: CGPoint(x: pick(xs, 0.5), y: pick(ys, 0.5)),
+                           bounds: CGRect(x: left, y: top, width: right - left, height: bottom - top))
     }
 
     /// Text boxes inside the area that `ScreenCandidate.centerOfView` covers.

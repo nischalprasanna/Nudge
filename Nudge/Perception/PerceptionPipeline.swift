@@ -37,6 +37,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     @Published private(set) var screenSizeText = ""
     /// Whether the fingernail marker is in use and in view, for the test screen.
     @Published private(set) var markerInfo = "Marker: off"
+    /// How to move the phone so the control panel sits in the middle of the view. Only
+    /// meaningful while no screen is anchored.
+    @Published private(set) var searchHint = SearchHint.none
     /// What the screen search can see right now, for the line under the camera view.
     @Published private(set) var searchInfo = ""
     /// Physical size of the anchored screen in metres.
@@ -81,6 +84,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     /// Outlines that were read and found not to be a touchscreen, with when (system uptime).
     private var rejected: [(anchor: ScreenAnchor, at: TimeInterval)] = []
     private var lastSearchInfo = ""
+    private var rawHint = SearchHint.none
+    private var rawHintRun = 0
+    private var publishedHint = SearchHint.none
     /// The screen area with no hand in front of it, for `ScreenChangeFinder`, and which of its
     /// pixels were in the camera's view when it was taken.
     private var reference: ScreenChangeFinder.Sample?
@@ -443,6 +449,18 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                 candidate = usable.first
             }
             lastSearchInfo = "Outlines \(detection.screens.count), with text \(detection.screens.filter(\.hasText).count), text in middle \(detection.centerText)"
+
+            // Aiming help. A hint has to hold for several looks in a row before it is passed on,
+            // so a phone that is still moving does not produce a stream of contradictions.
+            if let text = detection.text {
+                let hint = SearchHint.from(text)
+                rawHintRun = hint == rawHint ? rawHintRun + 1 : 1
+                rawHint = hint
+                if rawHintRun >= 4, hint != publishedHint {
+                    publishedHint = hint
+                    DispatchQueue.main.async { self.searchHint = hint }
+                }
+            }
             updateCandidate(candidate, centerText: detection.centerText, frame: frame, geometry: geometry)
         } else if trackScreen, detection.fingertip == nil {
             // Only while no hand is in view: a hand hides edges and gives misleading outlines.

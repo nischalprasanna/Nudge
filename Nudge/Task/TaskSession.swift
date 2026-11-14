@@ -303,7 +303,8 @@ final class TaskSession: ObservableObject {
         var first: (reading: ScreenReading, image: CGImage)?
         let searchStarted = Date()
         var askedForMiddle = false
-        var saidStillLooking = false
+        var lastHintSpoken = Date()
+        var lastHint = SearchHint.none
         while !Task.isCancelled {
             let elapsed = Date().timeIntervalSince(searchStarted)
             if elapsed > 50 { break }
@@ -316,9 +317,17 @@ final class TaskSession: ObservableObject {
                     askedForMiddle = true
                     pipeline.anchorNow(requireText: true)
                 }
-                if elapsed > 12, !saidStillLooking {
-                    saidStillLooking = true
-                    speaker.say("Still looking. Face the touchscreen from about an arm's length away.")
+                // Someone who cannot see the camera's view cannot aim it. Say which way to move
+                // the phone, no more than once every few seconds, and not the same thing twice
+                // in a row unless a good while has passed.
+                let hint = pipeline.searchHint
+                let sinceHint = Date().timeIntervalSince(lastHintSpoken)
+                if elapsed > 2.5, let words = hint.spoken,
+                   (hint != lastHint && sinceHint > 2.5) || sinceHint > 7 {
+                    lastHint = hint
+                    lastHintSpoken = Date()
+                    DebugLog.add("aim: \(hint.rawValue)")
+                    speaker.say(words)
                 }
                 try? await Task.sleep(nanoseconds: 100_000_000)
                 continue
@@ -356,6 +365,17 @@ final class TaskSession: ObservableObject {
             } else {
                 pipeline.revertExpansion()
                 try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+        // Found, but most of the keys could not be read: the phone is too far away or was moving.
+        let unread = current.reading.elements.filter { $0.label == ScreenReader.unreadLabel }.count
+        if unread * 2 > current.reading.elements.count, !Task.isCancelled {
+            DebugLog.add("screen: \(unread) of \(current.reading.elements.count) keys unread, asking to come closer")
+            await speaker.sayAndWait("Move a little closer, and hold still.")
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            if let again = await pipeline.readScreenNow() {
+                let unreadAgain = again.reading.elements.filter { $0.label == ScreenReader.unreadLabel }.count
+                if unreadAgain < unread { current = again }
             }
         }
         if Task.isCancelled { return }
