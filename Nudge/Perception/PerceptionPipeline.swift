@@ -28,7 +28,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     @Published private(set) var rectifiedImage: UIImage?
     @Published private(set) var isReading = false
     @Published private(set) var overlay = Overlay()
-    @Published private(set) var hasLiDAR = false
+    @Published private(set) var hasLiDAR = ARWorldTrackingConfiguration.supportsFrameSemantics(.sceneDepth)
     @Published private(set) var framesPerSecond: Double = 0
     @Published private(set) var portraitAspect: CGFloat = 0.75
     @Published private(set) var screenSizeText = ""
@@ -71,6 +71,10 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
     private var smoothedFPS: Double = 0
     private var lastPublishTime: TimeInterval = 0
     private var targetUV: CGPoint?
+    /// True when the anchor came from a detected outline (not the middle-of-view fallback).
+    private var anchorFromOutline = false
+    private var movedCandidate: ScreenCandidate?
+    private var movedCount = 0
     private var readCompletions: [(ScreenReading?, CGImage?) -> Void] = []
 
     // MARK: Lifecycle
@@ -115,6 +119,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
             self.anchor = nil
             self.lastCandidate = nil
             self.stableCount = 0
+            self.movedCandidate = nil
+            self.movedCount = 0
             self.resetSmoothing()
             DispatchQueue.main.async {
                 self.isAnchored = false
@@ -216,11 +222,17 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
         }
         lastFrameTime = frame.timestamp
 
-        let lookForScreen = anchor == nil && (wantsAnchorNow || frameIndex % 3 == 0)
-        let detection = detectors.detect(pixelBuffer: frame.capturedImage, wantScreen: lookForScreen)
+        let findScreen = anchor == nil && (wantsAnchorNow || frameIndex % 3 == 0)
+        // Once anchored, re-check the outline a few times a second so the anchor follows
+        // small drift, and follows the screen if it is moved.
+        let trackScreen = anchor != nil && anchorFromOutline && frameIndex % 10 == 0
+        let detection = detectors.detect(pixelBuffer: frame.capturedImage, wantScreen: findScreen || trackScreen)
 
-        if lookForScreen {
-            updateCandidate(detection.screen, frame: frame, geometry: geometry)
+        if findScreen {
+            updateCandidate(detection.screens.first, frame: frame, geometry: geometry)
+        } else if trackScreen, detection.fingertip == nil {
+            // Only while no hand is in view: a hand hides edges and gives misleading outlines.
+            followScreen(detection.screens, frame: frame, geometry: geometry)
         }
 
         var fingerState: FingerState?
@@ -275,7 +287,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
             lastCandidate = nil
         }
 
-        let stableEnough = autoAnchor && stableCount >= 4
+        let stableEnough = autoAnchor && stableCount >= 5
         guard stableEnough || wantsAnchorNow else { return }
         let forced = wantsAnchorNow
         wantsAnchorNow = false
@@ -286,18 +298,77 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate {
             if forced { publishStatus("Could not measure the surface. Hold steady about 40 centimetres away and try again.") }
             return
         }
+        let usedFallback = lastCandidate == nil
+        anchorFromOutline = !usedFallback
+        movedCandidate = nil
+        movedCount = 0
+        adopt(newAnchor, status: usedFallback
+              ? "Anchored to the middle of the view (no outline found)"
+              : "Screen anchored")
+    }
+
+    /// Makes `newAnchor` the current anchor and tells the UI.
+    private func adopt(_ newAnchor: ScreenAnchor, status: String?) {
         anchor = newAnchor
         resetSmoothing()
-        let usedFallback = lastCandidate == nil
         let size = String(format: "%.0f by %.0f cm", newAnchor.width * 100, newAnchor.height * 100)
         let metres = CGSize(width: CGFloat(newAnchor.width), height: CGFloat(newAnchor.height))
         DispatchQueue.main.async {
             self.isAnchored = true
             self.screenSize = metres
             self.screenSizeText = size
-            self.status = usedFallback
-                ? "Anchored to the middle of the view (no outline found)"
-                : "Screen anchored"
+            if let status { self.status = status }
+        }
+    }
+
+    /// Keeps the anchor on the screen. Small drift is corrected straight away; a large move
+    /// (someone shifted the device) is followed once the new outline has held still.
+    private func followScreen(_ candidates: [ScreenCandidate], frame: ARFrame, geometry: FrameGeometry) {
+        guard let current = anchor else { return }
+        let projected = current.corners.compactMap { geometry.project($0) }
+        guard projected.count == 4 else { return }
+        let currentOutline = ScreenCandidate(topLeft: projected[0], topRight: projected[1],
+                                             bottomRight: projected[2], bottomLeft: projected[3], confidence: 1)
+        guard let nearest = candidates.min(by: {
+            $0.maxCornerDistance(to: currentOutline) < $1.maxCornerDistance(to: currentOutline)
+        }) else {
+            movedCandidate = nil
+            movedCount = 0
+            return
+        }
+
+        let offset = nearest.maxCornerDistance(to: currentOutline)
+        // Close enough already: leave it alone so button positions do not jitter.
+        guard offset > 0.025 else {
+            movedCandidate = nil
+            movedCount = 0
+            return
+        }
+        // Only follow an outline that is physically the same size as the anchored screen.
+        guard let fresh = makeAnchor(from: nearest, frame: frame, geometry: geometry),
+              abs(fresh.width - current.width) / current.width < 0.2,
+              abs(fresh.height - current.height) / current.height < 0.2 else {
+            movedCandidate = nil
+            movedCount = 0
+            return
+        }
+
+        if offset < 0.08 {
+            movedCandidate = nil
+            movedCount = 0
+            adopt(fresh, status: nil)
+            return
+        }
+        if let last = movedCandidate, nearest.maxCornerDistance(to: last) < 0.03 {
+            movedCount += 1
+        } else {
+            movedCount = 1
+        }
+        movedCandidate = nearest
+        if movedCount >= 3 {
+            movedCandidate = nil
+            movedCount = 0
+            adopt(fresh, status: "The screen moved. Following it.")
         }
     }
 

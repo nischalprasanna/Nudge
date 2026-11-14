@@ -54,7 +54,8 @@ final class FrameDetectors {
         return request
     }()
 
-    func detect(pixelBuffer: CVPixelBuffer, wantScreen: Bool) -> (fingertip: FingertipDetection?, screen: ScreenCandidate?) {
+    /// `screens` holds every outline found, best first (largest and nearest the middle of the view).
+    func detect(pixelBuffer: CVPixelBuffer, wantScreen: Bool) -> (fingertip: FingertipDetection?, screens: [ScreenCandidate]) {
         // .right turns the landscape camera image upright for a phone held in portrait.
         let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right, options: [:])
         var requests: [VNRequest] = [handRequest]
@@ -62,9 +63,9 @@ final class FrameDetectors {
         do {
             try handler.perform(requests)
         } catch {
-            return (nil, nil)
+            return (nil, [])
         }
-        return (fingertip(), wantScreen ? screen() : nil)
+        return (fingertip(), wantScreen ? screens() : [])
     }
 
     private func fingertip() -> FingertipDetection? {
@@ -75,19 +76,20 @@ final class FrameDetectors {
                                   confidence: tip.confidence)
     }
 
-    private func screen() -> ScreenCandidate? {
-        guard let observations = rectangleRequest.results, !observations.isEmpty else { return nil }
+    private func screens() -> [ScreenCandidate] {
+        guard let observations = rectangleRequest.results, !observations.isEmpty else { return [] }
         // Prefer big outlines near the middle of the view: that is what the user is pointing at.
         func score(_ o: VNRectangleObservation) -> CGFloat {
             let box = o.boundingBox
             let offCenter = hypot(box.midX - 0.5, box.midY - 0.5)
             return box.width * box.height * (1 - min(offCenter, 0.5))
         }
-        guard let best = observations.max(by: { score($0) < score($1) }) else { return nil }
-        return ScreenCandidate(topLeft: FrameGeometry.raw(fromVisionPortrait: best.topLeft),
-                               topRight: FrameGeometry.raw(fromVisionPortrait: best.topRight),
-                               bottomRight: FrameGeometry.raw(fromVisionPortrait: best.bottomRight),
-                               bottomLeft: FrameGeometry.raw(fromVisionPortrait: best.bottomLeft),
-                               confidence: best.confidence)
+        return observations.sorted { score($0) > score($1) }.map { observation in
+            ScreenCandidate(topLeft: FrameGeometry.raw(fromVisionPortrait: observation.topLeft),
+                            topRight: FrameGeometry.raw(fromVisionPortrait: observation.topRight),
+                            bottomRight: FrameGeometry.raw(fromVisionPortrait: observation.bottomRight),
+                            bottomLeft: FrameGeometry.raw(fromVisionPortrait: observation.bottomLeft),
+                            confidence: observation.confidence)
+        }
     }
 }

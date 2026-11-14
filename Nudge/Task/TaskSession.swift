@@ -116,20 +116,25 @@ final class TaskSession: ObservableObject {
         }
 
         // 1. Find and anchor the screen.
+        // Always look afresh: an outline left over from earlier may no longer be on the screen.
         phase = .findingScreen
-        if !pipeline.isAnchored {
-            await speaker.sayAndWait("Point the phone at the touchscreen and hold it steady.")
-            if !(await waitUntil(timeout: 10) { self.pipeline.isAnchored }) {
-                // No clear outline: anchor to whatever is in the middle of the view.
-                pipeline.anchorNow()
-                _ = await waitUntil(timeout: 3) { self.pipeline.isAnchored }
-            }
-            guard pipeline.isAnchored else {
+        pipeline.clearAnchor()
+        _ = await waitUntil(timeout: 1) { !self.pipeline.isAnchored }
+        await speaker.sayAndWait("Point the phone at the touchscreen and hold it steady.")
+        if !(await waitUntil(timeout: 10) { self.pipeline.isAnchored }) {
+            // No clear outline: anchor to whatever is in the middle of the view.
+            pipeline.anchorNow()
+            _ = await waitUntil(timeout: 3) { self.pipeline.isAnchored }
+        }
+        guard pipeline.isAnchored else {
+            if !Task.isCancelled {
                 tones.playError()
                 await speaker.sayAndWait("I couldn't find a screen. Try holding the phone about forty centimetres away.")
-                return
             }
+            return
         }
+        // Let the outline settle for a moment before reading.
+        try? await Task.sleep(nanoseconds: 400_000_000)
         if Task.isCancelled { return }
 
         // 2. Read it.
@@ -164,9 +169,14 @@ final class TaskSession: ObservableObject {
         for _ in 0..<24 {
             if Task.isCancelled { return }
             phase = .planning
+            // Screens with little readable text are mostly icons, so the labels alone are not
+            // enough: include a picture from the start, unless the screen may show something personal.
+            let personal = SafetyScreen.mayShowPersonalInformation(current.reading)
+            let fewLabels = current.reading.elements.count < Self.fewLabelsThreshold
+            let attachImage = !personal && (sendImage || fewLabels)
             let request = PlanRequest(goal: spokenGoal, screen: current.reading, previousScreen: previous,
                                       history: history, userConfirmedRisk: confirmedRisk,
-                                      imageJPEG: sendImage ? Self.jpeg(from: current.image) : nil)
+                                      imageJPEG: attachImage ? Self.jpeg(from: current.image) : nil)
             sendImage = false
 
             let step: PlanStep
@@ -242,9 +252,7 @@ final class TaskSession: ObservableObject {
                 history.append(CompletedStep(targetName: target.name, expected: step.expect))
                 previous = current.reading
                 confirmedRisk = false
-                // Give the appliance a moment to redraw before reading it again.
-                try? await Task.sleep(nanoseconds: 500_000_000)
-                guard let fresh = await readScreen() else { return }
+                guard let fresh = await readSettledScreen(after: current.reading) else { return }
                 current = fresh
                 if await stopIfPayment(current.reading) { return }
             }
@@ -269,6 +277,25 @@ final class TaskSession: ObservableObject {
             await speaker.sayAndWait("I couldn't read the screen, so I've stopped.")
         }
         return nil
+    }
+
+    /// Reads the screen after a press, waiting until it has finished changing.
+    /// Screens animate and appliances redraw slowly, so one early read can catch a half-drawn state.
+    private func readSettledScreen(after before: ScreenReading) async -> (reading: ScreenReading, image: CGImage)? {
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        guard var latest = await readScreen() else { return nil }
+        for _ in 0..<2 {
+            if Task.isCancelled { return nil }
+            try? await Task.sleep(nanoseconds: 450_000_000)
+            guard let next = await pipeline.readScreenNow() else { break }
+            let settled = Self.labels(of: next.reading) == Self.labels(of: latest.reading)
+            latest = next
+            // Two matching reads in a row means the screen has stopped changing. If it still looks
+            // exactly like it did before the press, give it one more chance to react.
+            if settled, Self.labels(of: latest.reading) != Self.labels(of: before) { break }
+            if settled { try? await Task.sleep(nanoseconds: 400_000_000) }
+        }
+        return latest
     }
 
     private func stopIfPayment(_ reading: ScreenReading) async -> Bool {
@@ -360,6 +387,13 @@ final class TaskSession: ObservableObject {
             try? await Task.sleep(nanoseconds: 100_000_000)
         }
         return condition()
+    }
+
+    /// Below this many readable labels, a picture of the screen is sent along with them.
+    private static let fewLabelsThreshold = 8
+
+    private static func labels(of reading: ScreenReading) -> [String] {
+        reading.elements.map { $0.label.lowercased() }.sorted()
     }
 
     private static func isYes(_ answer: String) -> Bool {
