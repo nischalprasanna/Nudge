@@ -38,6 +38,10 @@ final class PhoneWatchLink: NSObject, ObservableObject, WCSessionDelegate {
             WatchMessageKey.haptic: command.rawValue,
             WatchMessageKey.sentAt: sent.timeIntervalSince1970,
         ]
+        if command == .approach {
+            session.sendMessage(message, replyHandler: nil, errorHandler: nil)
+            return
+        }
         session.sendMessage(message, replyHandler: { [weak self] _ in
             let ms = Int(Date().timeIntervalSince(sent) * 1000)
             DispatchQueue.main.async {

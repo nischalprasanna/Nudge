@@ -68,7 +68,7 @@ targets:
         WKApplication: true
         WKCompanionAppBundleIdentifier: com.nudgea11y.Nudge
         WKBackgroundModes:
-          - self-care
+          - physical-therapy
 
 schemes:
   Nudge:

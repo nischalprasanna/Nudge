@@ -240,8 +240,15 @@ final class TaskSession: ObservableObject {
     }
 
     /// Ends the task on a good note: chime, tick, and the closing sentence.
+    /// A cue on the wrist, if the watch channel is on.
+    private func buzz(_ command: HapticCommand) {
+        guard channels.watch else { return }
+        PhoneWatchLink.shared.send(command)
+    }
+
     private func succeed(_ text: String) async {
         DebugLog.add("task done: \(text)")
+        buzz(.confirmed)
         outcome = .done
         tones.playSuccess()
         Haptics.success()
@@ -251,6 +258,7 @@ final class TaskSession: ObservableObject {
     /// Ends the task with a problem: error sound and what went wrong.
     private func fail(_ text: String) async {
         DebugLog.add("task failed: \(text)")
+        buzz(.wrong)
         outcome = .problem
         tones.playError()
         Haptics.warning()
@@ -472,6 +480,7 @@ final class TaskSession: ObservableObject {
                     }
                     if !step.previousStepSucceeded {
                         tones.playError()
+                        buzz(.wrong)
                         if let last = trail.indices.last { trail[last].state = .failed }
                     }
                     stop = RouteStop(name: found.target.name, expect: step.expect, target: found.target, label: found.label,
@@ -506,6 +515,7 @@ final class TaskSession: ObservableObject {
                     // All good. Take its view of what follows, made from the newest reading.
                     route = self.stops(from: verdict.thenPress ?? [], in: current.reading)
                     DebugLog.add("check: last press confirmed, route continues")
+                    self.buzz(.confirmed)
                     return false
                 }
                 DebugLog.add("check: disagrees, interrupting. \(verdict.action.rawValue) \"\(verdict.targetName)\", previous ok \(verdict.previousStepSucceeded)")
