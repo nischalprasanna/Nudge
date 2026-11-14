@@ -74,38 +74,47 @@ struct WatchHomeView: View {
             Button {
                 link.play(.ping)
             } label: {
-                VStack(spacing: 6) {
-                    BrailleN(height: 30)
+                VStack(spacing: 5) {
+                    BrailleN(height: 32)
                     Text("Nudge")
                         .font(.system(.title3, design: .rounded, weight: .heavy))
                         .foregroundStyle(.white)
-                    Text(link.status)
-                        .font(.system(.caption2, design: .rounded, weight: .semibold))
-                        .foregroundStyle(WatchTheme.quiet)
-                        .multilineTextAlignment(.center)
-                    Text(keeper.status)
-                        .font(.system(size: 10, weight: .regular, design: .rounded))
-                        .foregroundStyle(WatchTheme.quiet.opacity(0.8))
+                    // One small light says whether the phone is in reach; words only when something is wrong.
+                    HStack(spacing: 5) {
+                        Circle()
+                            .fill(link.isConnected ? WatchTheme.done : WatchTheme.alert)
+                            .frame(width: 7, height: 7)
+                        Text(link.isConnected ? "Ready" : "Open Nudge on iPhone")
+                            .font(.system(.caption2, design: .rounded, weight: .semibold))
+                            .foregroundStyle(WatchTheme.quiet)
+                    }
+                    if !keeper.isAwake {
+                        Text("Not staying awake")
+                            .font(.system(size: 10, weight: .regular, design: .rounded))
+                            .foregroundStyle(WatchTheme.alert)
+                    }
                 }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 4)
             }
             .buttonStyle(.plain)
 
         case .working:
-            Text("Working")
-                .font(.system(.headline, design: .rounded, weight: .bold))
+            Image(systemName: "ellipsis")
+                .font(.system(size: 30, weight: .heavy))
                 .foregroundStyle(WatchTheme.quiet)
-                .padding(8)
+                .symbolEffect(.variableColor.iterative, isActive: true)
+                .padding(10)
 
         case .seeking:
             VStack(spacing: 0) {
                 if let symbol {
                     Image(systemName: symbol)
-                        .font(.system(size: 26, weight: .heavy))
+                        .font(.system(size: 30, weight: .heavy))
+                        .foregroundStyle(WatchTheme.signal)
                 }
                 Text(mainWord)
-                    .font(.system(size: 34, weight: .heavy, design: .rounded))
+                    .font(.system(size: 30, weight: .heavy, design: .rounded))
                     .minimumScaleFactor(0.6)
                     .lineLimit(1)
                 if isSmallStep {
@@ -115,28 +124,37 @@ struct WatchHomeView: View {
                 }
             }
             .foregroundStyle(.white)
-            .padding(.horizontal, 10)
-            .padding(.vertical, 4)
+            .padding(.horizontal, 4)
 
         case .tap:
-            Label("Tap", systemImage: "hand.tap.fill")
-                .font(.system(size: 32, weight: .heavy, design: .rounded))
-                .foregroundStyle(.black)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 6)
-                .background(WatchTheme.signal, in: Capsule())
+            // A solid disc: the one moment that matters most.
+            VStack(spacing: 0) {
+                Image(systemName: "hand.tap.fill")
+                    .font(.system(size: 30, weight: .heavy))
+                Text("Tap")
+                    .font(.system(size: 28, weight: .heavy, design: .rounded))
+            }
+            .foregroundStyle(.black)
+            .frame(width: 112, height: 112)
+            .background(WatchTheme.signal, in: Circle())
 
         case .done:
-            Label("Done", systemImage: "checkmark.circle.fill")
-                .font(.system(.title3, design: .rounded, weight: .heavy))
-                .foregroundStyle(WatchTheme.done)
-                .padding(8)
+            VStack(spacing: 2) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 40, weight: .bold))
+                Text("Done")
+                    .font(.system(.title3, design: .rounded, weight: .heavy))
+            }
+            .foregroundStyle(WatchTheme.done)
 
         case .problem:
-            Label("Stopped", systemImage: "exclamationmark.triangle.fill")
-                .font(.system(.title3, design: .rounded, weight: .heavy))
-                .foregroundStyle(WatchTheme.alert)
-                .padding(8)
+            VStack(spacing: 2) {
+                Image(systemName: "exclamationmark.circle.fill")
+                    .font(.system(size: 40, weight: .bold))
+                Text("Stopped")
+                    .font(.system(.title3, design: .rounded, weight: .heavy))
+            }
+            .foregroundStyle(WatchTheme.alert)
         }
     }
 
@@ -161,7 +179,7 @@ struct WatchHomeView: View {
 
     private var spoken: String {
         switch guidance.phase {
-        case .idle: return "Nudge. \(link.status). \(keeper.status). Double tap to test the buzz."
+        case .idle: return "Nudge. \(link.isConnected ? "Ready" : "Open Nudge on the iPhone"). Double tap to test the buzz."
         case .working: return "Working"
         case .seeking: return guidance.word.isEmpty ? "Guiding" : guidance.word
         case .tap: return "Tap"

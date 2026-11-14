@@ -21,7 +21,7 @@ struct WatchDotField: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.isLuminanceReduced) private var dimmed
 
-    private let spacing: CGFloat = 13
+    private let spacing: CGFloat = 12
     private let dotRadius: CGFloat = 2
 
     var body: some View {
@@ -34,33 +34,50 @@ struct WatchDotField: View {
         .accessibilityHidden(true)
     }
 
+    /// The dots sit on rings around the centre, not on a square grid, and thin out softly
+    /// toward whatever is written in the middle. Rings suit a watch face and the ripple that
+    /// runs through them; a grid with a rectangle cut out of it looked like a box in a box.
     private func draw(in context: inout GraphicsContext, size: CGSize, time: TimeInterval, still: Bool) {
         guard size.width > 0, size.height > 0 else { return }
-        let columns = max(1, Int(size.width / spacing))
-        let rows = max(1, Int(size.height / spacing))
-        let offsetX = (size.width - CGFloat(columns - 1) * spacing) / 2
-        let offsetY = (size.height - CGFloat(rows - 1) * spacing) / 2
+        let centre = CGPoint(x: size.width / 2, y: size.height / 2)
         let reach = max(hypot(size.width, size.height) / 2, 1)
         let t = CGFloat(time)
+        // The space left for the words: an ellipse a little larger than they are.
+        let clearX = gap.width / 2 + 10
+        let clearY = gap.height / 2 + 8
 
-        for row in 0..<rows {
-            for column in 0..<columns {
-                let point = CGPoint(x: offsetX + CGFloat(column) * spacing, y: offsetY + CGFloat(row) * spacing)
-                if gap.width > 0,
-                   abs(point.x - size.width / 2) < gap.width / 2 + dotRadius,
-                   abs(point.y - size.height / 2) < gap.height / 2 + dotRadius {
-                    continue
+        var ring = 1
+        while CGFloat(ring) * spacing < reach + spacing {
+            let radius = CGFloat(ring) * spacing
+            let count = max(6, Int((2 * .pi * radius / spacing).rounded()))
+            // Alternate rings are turned by half a step, so the dots do not line up in spokes.
+            let turn = ring % 2 == 0 ? CGFloat.pi / CGFloat(count) : 0
+            for step in 0..<count {
+                let angle = CGFloat(step) / CGFloat(count) * 2 * .pi + turn
+                let dx = cos(angle) * radius
+                let dy = sin(angle) * radius
+                let point = CGPoint(x: centre.x + dx, y: centre.y + dy)
+                guard point.x > -dotRadius, point.y > -dotRadius,
+                      point.x < size.width + dotRadius, point.y < size.height + dotRadius else { continue }
+
+                // 0 inside the space for the words, rising smoothly to 1 a little way out.
+                var presence: CGFloat = 1
+                if gap.width > 0 {
+                    let q = (dx * dx) / (clearX * clearX) + (dy * dy) / (clearY * clearY)
+                    if q < 1 { continue }
+                    presence = min(1, (q - 1) / 0.9)
                 }
-                let dx = point.x - size.width / 2
-                let dy = point.y - size.height / 2
-                let distance = hypot(dx, dy)
-                let (level, scale, color) = appearance(dx: dx, dy: dy, distance: distance, reach: reach, t: t, still: still)
-                let radius = dotRadius * scale
+
+                let (level, scale, color) = appearance(dx: dx, dy: dy, distance: radius, reach: reach, t: t, still: still)
                 let amount = min(max(level, 0), 1)
-                let fill = amount <= 0.01 ? WatchTheme.dotOff : color.opacity(0.16 + 0.84 * amount)
-                context.fill(Path(ellipseIn: CGRect(x: point.x - radius, y: point.y - radius, width: radius * 2, height: radius * 2)),
+                let size = dotRadius * scale * (0.55 + 0.45 * presence)
+                let fill = amount <= 0.01
+                    ? WatchTheme.dotOff.opacity(Double(presence))
+                    : color.opacity(Double((0.16 + 0.84 * amount) * presence))
+                context.fill(Path(ellipseIn: CGRect(x: point.x - size, y: point.y - size, width: size * 2, height: size * 2)),
                              with: .color(fill))
             }
+            ring += 1
         }
     }
 

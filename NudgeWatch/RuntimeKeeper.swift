@@ -8,6 +8,8 @@ final class RuntimeKeeper: NSObject, ObservableObject, WKExtendedRuntimeSessionD
     static let shared = RuntimeKeeper()
 
     @Published private(set) var status = "Not started"
+    /// False only once it is known that the keep-awake session is not running.
+    @Published private(set) var isAwake = true
     private var session: WKExtendedRuntimeSession?
 
     /// Call when the app becomes active. Does nothing if a session is already running.
@@ -21,7 +23,10 @@ final class RuntimeKeeper: NSObject, ObservableObject, WKExtendedRuntimeSessionD
     }
 
     func extendedRuntimeSessionDidStart(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
-        DispatchQueue.main.async { self.status = "Staying awake" }
+        DispatchQueue.main.async {
+            self.status = "Staying awake"
+            self.isAwake = true
+        }
     }
 
     func extendedRuntimeSessionWillExpire(_ extendedRuntimeSession: WKExtendedRuntimeSession) {
@@ -35,6 +40,7 @@ final class RuntimeKeeper: NSObject, ObservableObject, WKExtendedRuntimeSessionD
         DispatchQueue.main.async {
             self.session = nil
             self.status = "Not staying awake"
+            self.isAwake = false
         }
     }
 }

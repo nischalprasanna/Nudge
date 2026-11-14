@@ -7,6 +7,8 @@ final class WatchLink: NSObject, ObservableObject, WCSessionDelegate {
     static let shared = WatchLink()
 
     @Published private(set) var status: String = "Starting"
+    /// True while the phone's app can be reached.
+    @Published private(set) var isConnected = false
     @Published private(set) var lastCommand: String = "None yet"
 
     func start() {
@@ -26,11 +28,12 @@ final class WatchLink: NSObject, ObservableObject, WCSessionDelegate {
             device.play(.notification)
         case .approach:
             // No longer sent: the Watch times the approach beat itself. Kept for older builds.
-            device.play(.click)
+            device.play(.start)
         case .onTarget:
-            device.play(.success)
+            // The strongest pattern the Watch has, so "press now" cannot be mistaken for a beat.
+            device.play(.notification)
         case .confirmed:
-            device.play(.directionUp)
+            device.play(.success)
         case .wrong:
             device.play(.failure)
         }
@@ -40,6 +43,8 @@ final class WatchLink: NSObject, ObservableObject, WCSessionDelegate {
     }
 
     private func handle(_ message: [String: Any]) {
+        // Anything arriving from the phone means it is in reach.
+        DispatchQueue.main.async { if !self.isConnected { self.isConnected = true } }
         if let name = message[WatchMessageKey.phase] as? String, let phase = WatchPhase(rawValue: name) {
             let closeness = message[WatchMessageKey.closeness] as? Double
             var direction: CGVector?
@@ -62,12 +67,14 @@ final class WatchLink: NSObject, ObservableObject, WCSessionDelegate {
     func session(_ session: WCSession, activationDidCompleteWith activationState: WCSessionActivationState, error: Error?) {
         DispatchQueue.main.async {
             self.status = activationState == .activated ? "Connected to iPhone" : "Not connected"
+            self.isConnected = activationState == .activated && session.isReachable
         }
     }
 
     func sessionReachabilityDidChange(_ session: WCSession) {
         DispatchQueue.main.async {
             self.status = session.isReachable ? "Connected to iPhone" : "iPhone not reachable"
+            self.isConnected = session.isReachable
         }
     }
 
