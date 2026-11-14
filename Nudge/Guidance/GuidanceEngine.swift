@@ -117,8 +117,8 @@ final class GuidanceEngine {
             $0.snapshot.phase = .seeking
             $0.startedAt = now
             $0.lastMissingPrompt = now
-            // Give the "Press ..." sentence a moment before any direction word.
-            $0.lastVoiceTime = now
+            // The "Press ..." sentence has just finished; the first direction follows almost at once.
+            $0.lastVoiceTime = now - 1.0
         }
     }
 

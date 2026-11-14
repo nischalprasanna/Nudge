@@ -35,6 +35,8 @@ final class Listener {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         if recognizer.supportsOnDeviceRecognition { request.requiresOnDeviceRecognition = true }
+        // Short commands are the hardest thing to recognise; these words tell it what to expect.
+        request.contextualStrings = Self.expectedWords
 
         let input = engine.inputNode
         let format = input.outputFormat(forBus: 0)
@@ -82,13 +84,28 @@ final class Listener {
             let now = Date()
             if now.timeIntervalSince(started) > maxSeconds { break }
             if !state.best.isEmpty, now.timeIntervalSince(state.lastChange) > silenceSeconds { break }
-            if state.best.isEmpty, now.timeIntervalSince(started) > 6 { break }
+            if state.best.isEmpty, now.timeIntervalSince(started) > 7 { break }
         }
 
         engine.stop()
         input.removeTap(onBus: 0)
         request.endAudio()
+        // The recogniser often holds back a short phrase ("press one") until it is told the
+        // audio has ended. Give it a moment to hand over its final answer before giving up;
+        // cancelling straight away threw that answer out and reported that nothing was heard.
+        let ended = Date()
+        while !state.finished, Date().timeIntervalSince(ended) < (state.best.isEmpty ? 2.0 : 0.6) {
+            try? await Task.sleep(nanoseconds: 50_000_000)
+            if Task.isCancelled { break }
+        }
         task.cancel()
         return state.best.isEmpty ? nil : state.best
     }
+
+    private static let expectedWords = [
+        "press", "heat", "cook", "defrost", "reheat", "popcorn", "start", "stop", "clear", "cancel",
+        "seconds", "minutes", "degrees", "power level", "timer", "time cook", "time defrost",
+        "add thirty seconds", "bake", "broil", "preheat", "yes", "no",
+        "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "zero",
+    ]
 }

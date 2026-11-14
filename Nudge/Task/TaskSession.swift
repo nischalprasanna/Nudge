@@ -405,8 +405,10 @@ final class TaskSession: ObservableObject {
                 }
                 trail.append(TrailStep(name: target.name, state: .current))
                 await speaker.sayAndWait(step.say.isEmpty ? "Next, press \(target.name)." : step.say)
-                if history.isEmpty, !Task.isCancelled {
-                    // Said once per task. Nudge no longer comments on height while guiding.
+                if !Self.explainedHovering, !Task.isCancelled {
+                    // Said once each time the app is opened, not before every task: it costs
+                    // three seconds. Nudge no longer comments on height while guiding.
+                    Self.explainedHovering = true
                     await speaker.sayAndWait("Keep your finger just off the glass until I say tap.")
                 }
                 if Task.isCancelled { return }
@@ -483,7 +485,8 @@ final class TaskSession: ObservableObject {
         await speaker.sayAndWait(question)
         if Task.isCancelled { return nil }
         tones.playListening()
-        try? await Task.sleep(nanoseconds: 300_000_000)
+        // Just long enough for the tone to be heard; people start answering straight away.
+        try? await Task.sleep(nanoseconds: 120_000_000)
         return await listener.listen(maxSeconds: maxSeconds)
     }
 
@@ -578,6 +581,7 @@ final class TaskSession: ObservableObject {
     }
 
     /// Below this many readable labels, a picture of the screen is sent along with them.
+    private static var explainedHovering = false
     private static let fewLabelsThreshold = 8
     /// Fewer readable labels than this and the thing in view is not treated as a touchscreen.
     private static let fewestLabelsForAScreen = 3

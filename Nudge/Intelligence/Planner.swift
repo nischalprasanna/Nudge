@@ -130,7 +130,20 @@ struct CloudPlanner: TaskPlanner {
     You receive the goal, the presses made so far with what each was expected to do, the labels on \
     the screen before the last press, and the labels on the screen now. Labels come from on-device \
     text recognition, so they can be misspelled, split or incomplete; match them sensibly. Each \
-    label has an id and a position given as percent across and percent down the screen.
+    label has an id, a position given as percent across and percent down the screen, and the height \
+    of the label as a percent of the screen height (a name printed on two lines is about twice as tall).
+
+    Not every label is a button. Never choose these as the target:
+    - Section headings: a title printed above a group of related buttons, usually in smaller text \
+    and centred on a line of its own. On a microwave, "Auto Defrost" above Meat, Poultry and Fish \
+    is a heading, and so is "Express Cook" above the number keys. Pressing a heading does nothing.
+    - The display: the clock, a time or temperature readout, and small status words shown in or \
+    beside it (such as "defrost", "cook" or "lock" lighting up to show the current mode).
+    - Brand names, model numbers and printed instructions.
+    When the user's words match a heading or a display word, choose the real button that does what \
+    they mean: usually a larger label with the same word in it ("Time Defrost" for defrost, "Time \
+    Cook" for cook), or the right button in the group under the heading. A second line of small \
+    text directly under a button's name (such as "+30 sec" under "Start") is part of that button.
 
     Choose one action:
     - "tap": the user should press one button. Set target_id to that label's id. If the right \
@@ -188,6 +201,24 @@ struct CloudPlanner: TaskPlanner {
         return try JSONDecoder().decode(PlanStep.self, from: data)
     }
 
+    /// A label with nothing beside it, sitting just above a row of two or more labels that are
+    /// at least as tall, is usually a group title ("AUTO DEFROST" over Meat, Poultry, Fish).
+    /// The model is told so; it still decides. Without this hint it chose the heading about
+    /// one time in six when the user's word matched it.
+    static func looksLikeHeading(_ index: Int, in elements: [ScreenElement]) -> Bool {
+        let element = elements[index]
+        let y = element.center.y
+        var below: [CGFloat] = []
+        for (other, candidate) in elements.enumerated() where other != index {
+            let gap = candidate.center.y - y
+            if abs(gap) <= 0.025 { return false }      // something else on the same line
+            if gap > 0.025, gap <= 0.07 { below.append(candidate.box.height) }
+        }
+        guard below.count >= 2 else { return false }
+        below.sort()
+        return element.box.height <= below[below.count / 2]
+    }
+
     static func describe(_ request: PlanRequest) -> String {
         var lines: [String] = ["GOAL: \(request.goal)", ""]
 
@@ -209,14 +240,18 @@ struct CloudPlanner: TaskPlanner {
             lines.append("")
         }
 
-        lines.append("SCREEN NOW (id: label @ percent across, percent down):")
+        lines.append("SCREEN NOW (id: label @ percent across, percent down, text height):")
         if request.screen.elements.isEmpty {
             lines.append("(no text found)")
         }
         for (index, element) in request.screen.elements.enumerated() {
             let x = Int((element.center.x * 100).rounded())
             let y = Int((element.center.y * 100).rounded())
-            lines.append("\(index): \"\(element.label)\" @ \(x), \(y)")
+            let height = String(format: "%.1f", element.box.height * 100)
+            let note = looksLikeHeading(index, in: request.screen.elements)
+                ? "  (alone on its line, just above a row of buttons: probably a heading, not a button)"
+                : ""
+            lines.append("\(index): \"\(element.label)\" @ \(x), \(y), h \(height)\(note)")
         }
         lines.append("")
         lines.append(request.imageJPEG == nil
