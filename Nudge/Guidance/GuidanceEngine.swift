@@ -189,7 +189,7 @@ final class GuidanceEngine {
                     state.missingPrompts += 1
                     // The second time, say what usually fixes it: the hand is hiding the finger.
                     say = state.missingPrompts == 2
-                        ? "Hold the phone higher, so it looks down at your hand."
+                        ? Phrases.fingerHidden
                         : "I can't see your finger."
                 }
                 return

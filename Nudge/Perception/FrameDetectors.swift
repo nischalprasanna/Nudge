@@ -75,13 +75,13 @@ enum SearchHint: String {
     var spoken: String? {
         switch self {
         case .none: return nil
-        case .left: return "Turn the phone a little to the left."
-        case .right: return "Turn the phone a little to the right."
-        case .up: return "Tilt the phone up a little."
-        case .down: return "Tilt the phone down a little."
-        case .closer: return "Move closer."
-        case .back: return "Move back a little."
-        case .nothingInView: return "I can't see any buttons yet. Slowly turn the phone from side to side."
+        case .left: return Phrases.turnLeft
+        case .right: return Phrases.turnRight
+        case .up: return Phrases.tiltUp
+        case .down: return Phrases.tiltDown
+        case .closer: return Phrases.closer
+        case .back: return Phrases.back
+        case .nothingInView: return Phrases.nothingInView
         }
     }
 

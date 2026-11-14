@@ -299,7 +299,7 @@ final class TaskSession: ObservableObject {
             pipeline.clearAnchor()
             _ = await waitUntil(timeout: 1) { !self.pipeline.isAnchored }
             // Not awaited: the search runs while this is being said.
-            speaker.say("Point the phone at the touchscreen.")
+            speaker.say(Phrases.pointAtScreen)
         }
 
         var first: (reading: ScreenReading, image: CGImage)?
@@ -730,7 +730,7 @@ final class TaskSession: ObservableObject {
             if Task.isCancelled { return nil }
             if let result = await pipeline.readScreenNow() { return result }
             if attempt == 0 || attempt == 2 {
-                await speaker.sayAndWait("Move the phone back a little.")
+                await speaker.sayAndWait(Phrases.backToFit)
             }
             try? await Task.sleep(nanoseconds: 1_200_000_000)
         }
@@ -904,9 +904,9 @@ final class TaskSession: ObservableObject {
 
         // A hand reaching up from below needs a good third of the picture beneath the button.
         func advice(_ p: CGPoint) -> String? {
-            if p.y > 0.60 { return "Tilt the phone down a little." }
-            if p.x > 0.80 { return "Turn the phone a little to the right." }
-            if p.x < 0.20 { return "Turn the phone a little to the left." }
+            if p.y > 0.60 { return Phrases.tiltDown }
+            if p.x > 0.80 { return Phrases.turnRight }
+            if p.x < 0.20 { return Phrases.turnLeft }
             return nil
         }
         guard let first = advice(start) else { return }
