@@ -11,6 +11,7 @@ struct SettingsView: View {
     @AppStorage("channel.tones") private var tones = true
     @AppStorage("channel.voice") private var voice = true
     @AppStorage("channel.watch") private var watch = true
+    @AppStorage("wornOnChest") private var wornOnChest = false
 
     private var plannerName: String {
         CloudPlanner.fromConfiguredKeys()?.name ?? "Not set up (no key in this build)"
@@ -37,6 +38,16 @@ struct SettingsView: View {
                     Text("How Nudge guides you")
                 } footer: {
                     Text("Use any combination. Tones move left and right with the button, rise when it is higher, and speed up as you get close. With tones and voice both off, guidance comes through the watch alone.")
+                }
+
+                Section {
+                    Toggle(isOn: $wornOnChest) {
+                        Label("Worn on the chest", systemImage: "person.crop.rectangle")
+                    }
+                } header: {
+                    Text("How you carry the phone")
+                } footer: {
+                    Text("Turn this on when the phone is tucked into a shirt or hangs on a lanyard with its screen against you. During a task the screen switches off and ignores touches while it is covered, so your body cannot press Stop. Take the phone out to use the controls.")
                 }
 
                 Section("This phone") {

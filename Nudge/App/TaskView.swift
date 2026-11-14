@@ -16,6 +16,8 @@ struct TaskView: View {
     @State private var showGoalEntry = false
     @State private var typedGoal = ""
     @State private var didAutoStart = false
+    /// The phone is tucked into a shirt or on a lanyard, screen against the body.
+    @AppStorage("wornOnChest") private var wornOnChest = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -42,13 +44,26 @@ struct TaskView: View {
                 return
             }
             #endif
+            setWorkingMode(true)
             session.prepare()
             if autoStart, !didAutoStart {
                 didAutoStart = true
                 session.start()
             }
         }
-        .onDisappear { session.shutdown() }
+        .onDisappear {
+            setWorkingMode(false)
+            session.shutdown()
+        }
+    }
+
+    /// While this screen is open the phone must not lock itself: nobody touches it during a task.
+    /// When it is worn, the proximity sensor (the one that blanks the screen against your ear on
+    /// a call) also switches the screen off and ignores touches while the phone is against the
+    /// body, so the wearer's chest cannot press Stop or Close.
+    private func setWorkingMode(_ on: Bool) {
+        UIApplication.shared.isIdleTimerDisabled = on
+        UIDevice.current.isProximityMonitoringEnabled = on && wornOnChest
     }
 
     // MARK: Camera
