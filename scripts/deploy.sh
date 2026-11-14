@@ -74,4 +74,17 @@ set -e
 
 xcrun devicectl device install app --device "$PHONE" "$APP" | grep -E 'App installed|error|bundleID' || true
 xcrun devicectl device process launch --device "$PHONE" --terminate-existing "$BUNDLE_ID" | grep -E 'Launched|error|denied' || true
+
+# With the full build, put the Watch app straight onto the Watch as well. Installing it from
+# the iPhone's Watch app left a half-finished install that blocked every later attempt.
+if [[ "$PROJECT" == "Nudge.xcodeproj" ]]; then
+  WATCH=$(xcrun devicectl list devices 2>/dev/null | grep -i "Apple Watch" | grep physical | grep connected | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' | head -1 || true)
+  WATCH_APP="$DERIVED/Build/Products/Debug-watchos/NudgeWatch.app"
+  if [[ -n "$WATCH" && -d "$WATCH_APP" ]]; then
+    xcrun devicectl device uninstall app --device "$WATCH" "$BUNDLE_ID.watchkitapp" >/dev/null 2>&1 || true
+    xcrun devicectl device install app --device "$WATCH" "$WATCH_APP" 2>&1 | grep -E 'bundleID|ERROR' | sed 's/^/Watch: /' || true
+  else
+    echo "Watch: not connected to this Mac, so the Watch app was not installed."
+  fi
+fi
 echo "Done."
