@@ -6,7 +6,7 @@ import WatchKit
 ///
 /// The phone says how near the finger is to the button about five times a second. The Watch
 /// turns that into a steady beat of taps: about one a second when the finger is far away,
-/// quickening smoothly to about four a second when it is nearly on the button. The beat is
+/// quickening to nearly seven a second when it is on the button. The beat is
 /// timed here, not on the phone, so it stays even when Bluetooth delivers messages in bursts.
 final class WatchGuidance: ObservableObject {
     static let shared = WatchGuidance()
@@ -24,10 +24,12 @@ final class WatchGuidance: ObservableObject {
     /// Seconds between taps for a given closeness.
     static func interval(for closeness: Double) -> TimeInterval {
         let c = min(max(closeness, 0), 1)
-        // Eased so the change is easy to feel across the whole approach, not only at the end.
-        // The fastest beat is about four a second: each tap is a firm one, and firmer taps
-        // need a little room between them or they blur into a hum.
-        return 1.0 - 0.76 * pow(c, 0.8)
+        // Each step closer shortens the gap by the same proportion, from 1.3 seconds at arm's
+        // reach down to 0.15 on the button. A beat that speeds up in proportion is far easier
+        // to feel than one that loses the same fraction of a second each step: the difference
+        // between slow and slightly less slow is lost, while this nearly doubles in speed
+        // every quarter of the way.
+        return 1.3 * pow(0.15 / 1.3, c)
     }
 
     /// Call on the main thread with each update from the phone.

@@ -799,6 +799,8 @@ final class TaskSession: ObservableObject {
     private func guide(to target: GuidanceEngine.Target, shouldInterrupt: () -> Bool = { false }) async -> GuideResult {
         guard let size = pipeline.screenSize else { return .gaveUp }
         pipeline.setTarget(target.uv)
+        await coachFraming(for: target)
+        if Task.isCancelled { return .gaveUp }
         guidance.begin(target: target, screenWidth: Float(size.width), screenHeight: Float(size.height))
         defer {
             guidance.end()
@@ -852,6 +854,48 @@ final class TaskSession: ObservableObject {
             if Date().timeIntervalSince(started) > 120 { return .gaveUp }
         }
         return .gaveUp
+    }
+
+    /// Makes sure there is room in the camera's view for the hand that is about to reach for
+    /// this button.
+    ///
+    /// The hand tracker needs to see a hand, not just a fingertip. A button near the bottom or
+    /// the side of the picture leaves the hand outside it, and the finger is then lost exactly
+    /// when it matters. A blind user cannot see the framing, so say how to move the phone, wait
+    /// a few seconds for it, and carry on either way.
+    private func coachFraming(for target: GuidanceEngine.Target) async {
+        // The target's place in the upright camera picture: x across, y down, each 0...1.
+        var place: CGPoint?
+        for _ in 0..<5 {
+            if let seen = pipeline.overlay.target {
+                place = seen
+                break
+            }
+            try? await Task.sleep(nanoseconds: 80_000_000)
+        }
+        guard let start = place else { return }
+        DebugLog.add(String(format: "framing: \"%@\" sits %.0f%% across and %.0f%% down the camera picture", target.name, start.x * 100, start.y * 100))
+
+        // A hand reaching up from below needs a good third of the picture beneath the button.
+        func advice(_ p: CGPoint) -> String? {
+            if p.y > 0.60 { return "Tilt the phone down a little." }
+            if p.x > 0.80 { return "Turn the phone a little to the right." }
+            if p.x < 0.20 { return "Turn the phone a little to the left." }
+            return nil
+        }
+        guard let first = advice(start) else { return }
+        await speaker.sayAndWait(first)
+        let asked = Date()
+        while Date().timeIntervalSince(asked) < 4, !Task.isCancelled {
+            try? await Task.sleep(nanoseconds: 150_000_000)
+            guard let now = pipeline.overlay.target else { continue }
+            if advice(now) == nil {
+                DebugLog.add(String(format: "framing: fixed, now %.0f%% across and %.0f%% down", now.x * 100, now.y * 100))
+                await speaker.sayAndWait("Good.")
+                return
+            }
+        }
+        DebugLog.add("framing: not fixed, carrying on")
     }
 
     // MARK: Helpers
