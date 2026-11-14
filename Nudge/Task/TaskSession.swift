@@ -37,8 +37,7 @@ final class TaskSession: ObservableObject {
 
     init() {
         guidance = GuidanceEngine(tones: tones, speaker: speaker)
-        if let client = ClaudeClient() {
-            let cloud = CloudPlanner(client: client)
+        if let cloud = CloudPlanner.fromConfiguredKeys() {
             planner = cloud
             plannerName = cloud.name
         }

@@ -47,6 +47,7 @@ targets:
         NSSpeechRecognitionUsageDescription: Nudge turns your spoken goal into steps on the appliance.
         NSMotionUsageDescription: Nudge uses AirPods head tracking so guidance sounds stay fixed on the button.
         AnthropicAPIKey: $(ANTHROPIC_API_KEY)
+        GeminiAPIKey: $(GEMINI_API_KEY)
 
   NudgeWatch:
     type: application

@@ -107,8 +107,15 @@ enum SafetyScreen {
 /// Plans with the cloud model. Sends button labels and positions as text; a picture of the
 /// screen is sent only when the model asks for one and the screen shows nothing personal.
 struct CloudPlanner: TaskPlanner {
-    let client: ClaudeClient
-    var name: String { "Cloud (\(ClaudeClient.model))" }
+    let client: JSONModelClient
+    var name: String { client.displayName }
+
+    /// Uses whichever cloud key the build was given: Anthropic first, then Gemini. Nil if neither is set.
+    static func fromConfiguredKeys() -> CloudPlanner? {
+        if let claude = ClaudeClient() { return CloudPlanner(client: claude) }
+        if let gemini = GeminiClient() { return CloudPlanner(client: gemini) }
+        return nil
+    }
 
     private static let system = """
     You help a blind person operate a touchscreen appliance (microwave, oven, thermostat, washing \
