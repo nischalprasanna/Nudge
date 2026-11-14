@@ -47,6 +47,9 @@ final class GuidanceEngine {
         var lastSeen: TimeInterval = 0
         /// From the finger to the button in metres: x to the right, y down. Nil while the finger is not seen.
         var offset: SIMD2<Float>?
+        /// Camera frames in which the finger was and was not found, for this button.
+        var framesSeen = 0
+        var framesMissed = 0
     }
 
     private enum Axis { case horizontal, vertical }
@@ -156,6 +159,11 @@ final class GuidanceEngine {
             guard let target = state.target else { return }
 
             guard let finger else {
+                state.snapshot.framesMissed += 1
+                // The hand tracker drops the odd frame, more so near the edge of the picture.
+                // Ride out a short gap as if nothing had happened; without this, each missed
+                // frame restarted the countdown to "tap" and the tones cut in and out.
+                if state.snapshot.lastSeen > 0, now - state.snapshot.lastSeen < 0.35 { return }
                 cue = .silent
                 state.snapshot.distance = nil
                 state.snapshot.offset = nil
@@ -177,6 +185,7 @@ final class GuidanceEngine {
                 return
             }
             state.snapshot.lastSeen = now
+            state.snapshot.framesSeen += 1
 
             // Offsets in metres: positive dx means move right, positive dy means move down.
             let dx = Float(target.uv.x - finger.uv.x) * state.screenWidth

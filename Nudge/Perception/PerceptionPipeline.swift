@@ -96,6 +96,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     private var lastHandBox: CGRect?
     private var lastHandTime: TimeInterval = 0
     private var depthHandStreak = 0
+    private var lastFingerTime: TimeInterval = 0
     private var validationCompletions: [(Bool) -> Void] = []
     private var readCompletions: [(ScreenReading?, CGImage?) -> Void] = []
 
@@ -379,7 +380,12 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                 }
             }
         }
-        if fingerState == nil { resetSmoothing() }
+        // Keep the smoothing through a dropped frame or two; start afresh after a real gap.
+        if fingerState != nil {
+            lastFingerTime = frame.timestamp
+        } else if frame.timestamp - lastFingerTime > 0.35 {
+            resetSmoothing()
+        }
         onFinger?(fingerState)
 
         if wantsReadFromNextFrame, anchor != nil {

@@ -80,6 +80,8 @@ struct PlanRequest {
     var userConfirmedRisk: Bool
     /// A JPEG of the flattened screen, only when the planner asked to look.
     var imageJPEG: Data?
+    /// Names of the presses still to come on the route planned earlier, in order.
+    var plannedNext: [String] = []
 }
 
 /// Chooses the next step. Implementations: cloud model now, on-device model later.
@@ -277,6 +279,11 @@ struct CloudPlanner: TaskPlanner {
         lines.append("")
         lines.append("USER CONFIRMED RISKY ACTION: \(request.userConfirmedRisk ? "yes" : "no")")
         lines.append("")
+        if !request.plannedNext.isEmpty {
+            lines.append("ROUTE PLANNED EARLIER, PRESSES STILL TO COME: \(request.plannedNext.joined(separator: ", "))")
+            lines.append("The user is already being guided to the first of these. If the last press worked and this route is still right, keep to it exactly: give the first as this step and the rest in then_press. Change it only if the screen now shows it is wrong.")
+            lines.append("")
+        }
 
         if let previous = request.previousScreen {
             let labels = previous.elements.map { "\"\($0.label)\"" }.joined(separator: ", ")

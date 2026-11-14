@@ -349,140 +349,322 @@ final class TaskSession: ObservableObject {
         goal = spokenGoal
         DebugLog.add("goal: \"\(spokenGoal)\"\(typedGoal == nil ? "" : " (typed)")")
 
-        // 4. Plan, guide, verify, repeat.
+        // 4. Plan the route, then guide, verify, repeat.
+        //
+        // The planner is asked for the whole route at once. After each press Nudge moves straight
+        // on to the next button on it, while the planner checks that press in the background
+        // against a fresh reading of the screen. If the check disagrees (wrong button, nothing
+        // happened, a risky step ahead), guidance is interrupted and the check's answer is followed.
         var history: [CompletedStep] = []
         var previous: ScreenReading?
         var confirmedRisk = false
         var sendImage = false
         var looks = 0
+        var route: [RouteStop] = []
+        var check: BackgroundCheck?
+        var forced: PlanStep?
+        var screenChanged = true
+        defer { check?.task?.cancel() }
 
-        for _ in 0..<24 {
+        for _ in 0..<40 {
             if Task.isCancelled { return }
-            phase = .planning
-            // Screens with little readable text are mostly icons, so the labels alone are not
-            // enough: include a picture from the start, unless the screen may show something personal.
-            let personal = SafetyScreen.mayShowPersonalInformation(current.reading)
-            let fewLabels = current.reading.elements.count < Self.fewLabelsThreshold
-            let attachImage = !personal && (sendImage || fewLabels)
-            let request = PlanRequest(goal: spokenGoal, screen: current.reading, previousScreen: previous,
-                                      history: history, userConfirmedRisk: confirmedRisk,
-                                      imageJPEG: attachImage ? Self.jpeg(from: current.image) : nil)
-            sendImage = false
 
-            // Never leave the user in silence, and never throw away a task that is going well
-            // because one request was slow: say so, and ask again before giving up.
-            DebugLog.add("plan: asking, \(current.reading.elements.count) labels, picture \(request.imageJPEG?.count ?? 0) bytes, step \(history.count + 1)")
-            var planned: PlanStep?
-            var planError: Error?
-            for attempt in 0..<3 {
-                let asked = Date()
-                let reassure = Task { [speaker] in
-                    try? await Task.sleep(nanoseconds: 4_000_000_000)
-                    if !Task.isCancelled { speaker.say(attempt == 0 ? "Still working it out." : "Nearly there.") }
-                }
-                do {
-                    planned = try await Self.plan(with: planner, request, deadline: request.imageJPEG == nil ? 10 : 20)
-                    reassure.cancel()
-                    DebugLog.add(String(format: "plan: answered in %.1f s", Date().timeIntervalSince(asked)))
-                    break
-                } catch {
+            // Where does the next step come from?
+            var planned: PlanStep? = forced
+            forced = nil
+            var stop: RouteStop?
+
+            // The check on the last press is needed now if it has already come back, if there is
+            // no route to carry on with, or if the screen did not react to the press.
+            if planned == nil, let pending = check, pending.finished || route.isEmpty || !screenChanged {
+                if !pending.finished {
+                    phase = .planning
+                    let reassure = reassurance()
+                    await pending.task?.value
                     reassure.cancel()
                     if Task.isCancelled { return }
-                    planError = error
-                    DebugLog.add(String(format: "plan: attempt %d failed after %.1f s: %@", attempt + 1,
-                                        Date().timeIntervalSince(asked), error.localizedDescription))
+                }
+                check = nil
+                if let verdict = pending.step {
+                    planned = verdict
+                } else if route.isEmpty {
+                    await fail("I couldn't reach the planner, so I've stopped.")
+                    return
                 }
             }
-            guard let step = planned else {
-                await fail("I couldn't reach the planner. \(planError?.localizedDescription ?? "")")
-                return
+            if planned == nil, !route.isEmpty {
+                stop = refreshed(route.removeFirst(), in: current.reading)
+                DebugLog.add("route: on to \"\(stop?.name ?? "")\" without waiting")
             }
-            DebugLog.add("plan: \(step.action.rawValue) \"\(step.targetName)\" id \(step.targetID), say \"\(step.say)\", previous ok \(step.previousStepSucceeded)")
+            if planned == nil, stop == nil {
+                phase = .planning
+                let request = makeRequest(goal: spokenGoal, current: current, previous: previous, history: history,
+                                          confirmedRisk: confirmedRisk, forcePicture: sendImage, plannedNext: [])
+                sendImage = false
+                let reassure = reassurance()
+                planned = await requestPlan(request, using: planner)
+                reassure.cancel()
+                if Task.isCancelled { return }
+                guard planned != nil else {
+                    await fail("I couldn't reach the planner, so I've stopped.")
+                    return
+                }
+            }
+
+            if let step = planned {
+                switch step.action {
+                case .done:
+                    await succeed(step.say.isEmpty ? "Done." : step.say)
+                    return
+
+                case .refusePayment:
+                    await fail("This is a payment screen. Nudge does not handle payments, so I'm stopping here.")
+                    return
+
+                case .cannot:
+                    await fail(step.say.isEmpty ? "I can't do that from this screen." : step.say)
+                    return
+
+                case .look:
+                    looks += 1
+                    if SafetyScreen.mayShowPersonalInformation(current.reading) {
+                        await fail("This screen may show personal information, so I won't send a picture of it. I can't work out the buttons from the text alone.")
+                        return
+                    }
+                    guard looks <= 2 else {
+                        await fail("I can't work out the buttons on this screen.")
+                        return
+                    }
+                    sendImage = true
+                    route = []
+                    continue
+
+                case .confirm:
+                    phase = .listening
+                    let answer = await ask(step.say + " Say yes to continue, or no to stop.", maxSeconds: 7) ?? ""
+                    guard Self.isYes(answer) else {
+                        await speaker.sayAndWait("Okay, I've stopped.")
+                        return
+                    }
+                    confirmedRisk = true
+                    route = []
+                    continue
+
+                case .tap:
+                    guard let found = resolve(step, in: current.reading) else {
+                        await fail("I couldn't locate that button on the screen.")
+                        return
+                    }
+                    if !step.previousStepSucceeded {
+                        tones.playError()
+                        if let last = trail.indices.last { trail[last].state = .failed }
+                    }
+                    stop = RouteStop(name: found.target.name, expect: step.expect, target: found.target, label: found.label,
+                                     say: step.say.isEmpty ? "Next, press \(found.target.name)." : step.say)
+                    route = stops(from: step.thenPress ?? [], in: current.reading)
+                    DebugLog.add("route: \(([found.target.name] + route.map(\.name)).joined(separator: " > "))")
+                }
+            }
+            guard let stop else { continue }
+
+            trail.append(TrailStep(name: stop.name, state: .current))
+            await speaker.sayAndWait(stop.say)
+            if !Self.explainedHovering, !Task.isCancelled {
+                // Said once each time the app is opened, not before every task: it costs
+                // three seconds. Nudge no longer comments on height while guiding.
+                Self.explainedHovering = true
+                await speaker.sayAndWait("Keep your finger just off the glass until I say tap.")
+            }
             if Task.isCancelled { return }
 
-            switch step.action {
-            case .done:
-                await succeed(step.say.isEmpty ? "Done." : step.say)
-                return
-
-            case .refusePayment:
-                await fail("This is a payment screen. Nudge does not handle payments, so I'm stopping here.")
-                return
-
-            case .cannot:
-                await fail(step.say.isEmpty ? "I can't do that from this screen." : step.say)
-                return
-
-            case .look:
-                looks += 1
-                if SafetyScreen.mayShowPersonalInformation(current.reading) {
-                    await fail("This screen may show personal information, so I won't send a picture of it. I can't work out the buttons from the text alone.")
-                    return
+            phase = .guiding
+            // Explain the hand-away step once; after that a single word is enough.
+            guidance.tapPhrase = history.isEmpty ? "Tap, then move your hand away." : "Tap."
+            let guideStarted = Date()
+            var interruption: PlanStep?
+            let result = await guide(to: stop.target) {
+                // Called several times a second while guiding: has the check on the last press come back?
+                guard let pending = check, pending.finished else { return false }
+                check = nil
+                guard let verdict = pending.step else { return false }
+                if Self.agrees(verdict, withButton: stop.name) {
+                    // All good. Take its view of what follows, made from the newest reading.
+                    route = self.stops(from: verdict.thenPress ?? [], in: current.reading)
+                    DebugLog.add("check: last press confirmed, route continues")
+                    return false
                 }
-                guard looks <= 2 else {
-                    await fail("I can't work out the buttons on this screen.")
-                    return
-                }
-                sendImage = true
-
-            case .confirm:
-                phase = .listening
-                let answer = await ask(step.say + " Say yes to continue, or no to stop.", maxSeconds: 7) ?? ""
-                guard Self.isYes(answer) else {
-                    await speaker.sayAndWait("Okay, I've stopped.")
-                    return
-                }
-                confirmedRisk = true
-
-            case .tap:
-                guard let target = target(for: step, in: current.reading) else {
-                    await fail("I couldn't locate that button on the screen.")
-                    return
-                }
-                if !step.previousStepSucceeded {
-                    tones.playError()
-                    if let last = trail.indices.last { trail[last].state = .failed }
-                }
-                trail.append(TrailStep(name: target.name, state: .current))
-                await speaker.sayAndWait(step.say.isEmpty ? "Next, press \(target.name)." : step.say)
-                if !Self.explainedHovering, !Task.isCancelled {
-                    // Said once each time the app is opened, not before every task: it costs
-                    // three seconds. Nudge no longer comments on height while guiding.
-                    Self.explainedHovering = true
-                    await speaker.sayAndWait("Keep your finger just off the glass until I say tap.")
-                }
-                if Task.isCancelled { return }
-
-                phase = .guiding
-                // Explain the hand-away step once; after that a single word is enough.
-                guidance.tapPhrase = history.isEmpty ? "Tap, then move your hand away." : "Tap."
-                let guideStarted = Date()
-                let reached = await guide(to: target)
-                DebugLog.add(String(format: "guide: \"%@\" %@ after %.1f s", target.name, reached ? "pressed" : "gave up",
-                                    Date().timeIntervalSince(guideStarted)))
-                guard reached else {
-                    if !Task.isCancelled {
-                        await fail("I lost track of your finger for too long, so I've stopped.")
-                    }
-                    return
-                }
-
-                phase = .verifying
-                Haptics.tap()
-                if let last = trail.indices.last { trail[last].state = .done }
-                history.append(CompletedStep(targetName: target.name, expected: step.expect))
-                previous = current.reading
-                confirmedRisk = false
-                let readStarted = Date()
-                guard let fresh = await readSettledScreen(after: current.reading) else { return }
-                current = fresh
-                DebugLog.add(String(format: "read: %d labels after %.1f s, changed %@", fresh.reading.elements.count,
-                                    Date().timeIntervalSince(readStarted),
-                                    Self.labels(of: fresh.reading) != Self.labels(of: previous ?? fresh.reading) ? "yes" : "no"))
-                if await stopIfPayment(current.reading) { return }
+                DebugLog.add("check: disagrees, interrupting. \(verdict.action.rawValue) \"\(verdict.targetName)\", previous ok \(verdict.previousStepSucceeded)")
+                interruption = verdict
+                return true
             }
+            let stats = guidance.snapshot
+            DebugLog.add(String(format: "guide: \"%@\" %@ after %.1f s, finger seen in %d of %d frames", stop.name,
+                                result == .pressed ? "pressed" : (result == .interrupted ? "interrupted" : "gave up"),
+                                Date().timeIntervalSince(guideStarted), stats.framesSeen, stats.framesSeen + stats.framesMissed))
+            switch result {
+            case .interrupted:
+                // The last press did not do what was expected; follow the check instead.
+                if trail.last?.state == .current { trail.removeLast() }
+                route = []
+                forced = interruption
+                continue
+            case .gaveUp:
+                if !Task.isCancelled {
+                    await fail("I lost track of your finger for too long, so I've stopped.")
+                }
+                return
+            case .pressed:
+                break
+            }
+
+            phase = .verifying
+            Haptics.tap()
+            if let last = trail.indices.last { trail[last].state = .done }
+            history.append(CompletedStep(targetName: stop.name, expected: stop.expect))
+            previous = current.reading
+            confirmedRisk = false
+            check?.task?.cancel()
+            check = nil
+            let readStarted = Date()
+            guard let fresh = await readAfterPress(before: current.reading) else { return }
+            screenChanged = Self.labels(of: fresh.reading) != Self.labels(of: current.reading)
+            current = fresh
+            DebugLog.add(String(format: "read: %d labels after %.1f s, changed %@", fresh.reading.elements.count,
+                                Date().timeIntervalSince(readStarted), screenChanged ? "yes" : "no"))
+            if await stopIfPayment(current.reading) { return }
+
+            // Have the planner check this press, and say what comes next, while the user moves on.
+            let request = makeRequest(goal: spokenGoal, current: current, previous: previous, history: history,
+                                      confirmedRisk: false, forcePicture: false, plannedNext: route.map(\.name))
+            check = startCheck(request, using: planner)
         }
         await speaker.sayAndWait("That took more steps than I expected, so I've stopped.")
+    }
+
+    // MARK: Route
+
+    /// One button on the planned route.
+    private struct RouteStop {
+        var name: String
+        var expect: String
+        var target: GuidanceEngine.Target
+        /// The text the reader found on the button, used to find it again after the screen changes.
+        var label: String?
+        var say: String
+    }
+
+    /// A planner request running while the user is being guided to the next button.
+    private final class BackgroundCheck {
+        var finished = false
+        var step: PlanStep?
+        var task: Task<Void, Never>?
+    }
+
+    private enum GuideResult { case pressed, gaveUp, interrupted }
+
+    private func startCheck(_ request: PlanRequest, using planner: TaskPlanner) -> BackgroundCheck {
+        let box = BackgroundCheck()
+        box.task = Task { [weak self] in
+            let step = await self?.requestPlan(request, using: planner)
+            box.step = step
+            box.finished = true
+        }
+        return box
+    }
+
+    private func makeRequest(goal: String, current: (reading: ScreenReading, image: CGImage), previous: ScreenReading?,
+                             history: [CompletedStep], confirmedRisk: Bool, forcePicture: Bool,
+                             plannedNext: [String]) -> PlanRequest {
+        // Screens with little readable text are mostly icons, so the labels alone are not
+        // enough: include a picture, unless the screen may show something personal.
+        let personal = SafetyScreen.mayShowPersonalInformation(current.reading)
+        let fewLabels = current.reading.elements.count < Self.fewLabelsThreshold
+        let attach = !personal && (forcePicture || fewLabels)
+        return PlanRequest(goal: goal, screen: current.reading, previousScreen: previous, history: history,
+                           userConfirmedRisk: confirmedRisk, imageJPEG: attach ? Self.jpeg(from: current.image) : nil,
+                           plannedNext: plannedNext)
+    }
+
+    /// Asks the planner, trying again if a request is slow or fails. Nil if it could not be reached.
+    /// Says nothing: it also runs in the background.
+    private func requestPlan(_ request: PlanRequest, using planner: TaskPlanner) async -> PlanStep? {
+        DebugLog.add("plan: asking, \(request.screen.elements.count) labels, picture \(request.imageJPEG?.count ?? 0) bytes, after \(request.history.count) presses")
+        for attempt in 0..<3 {
+            if Task.isCancelled { return nil }
+            let asked = Date()
+            do {
+                let step = try await Self.plan(with: planner, request, deadline: request.imageJPEG == nil ? 10 : 20)
+                DebugLog.add(String(format: "plan: answered in %.1f s: %@ \"%@\" id %d, then %@, previous ok %@, say \"%@\"",
+                                    Date().timeIntervalSince(asked), step.action.rawValue, step.targetName, step.targetID,
+                                    (step.thenPress ?? []).map(\.targetName).joined(separator: " > "),
+                                    step.previousStepSucceeded ? "yes" : "no", step.say))
+                return step
+            } catch {
+                if Task.isCancelled { return nil }
+                DebugLog.add(String(format: "plan: attempt %d failed after %.1f s: %@", attempt + 1,
+                                    Date().timeIntervalSince(asked), error.localizedDescription))
+            }
+        }
+        return nil
+    }
+
+    /// Speaks up if the wait for the planner drags on. Cancel it when the answer arrives.
+    private func reassurance() -> Task<Void, Never> {
+        Task { [speaker] in
+            try? await Task.sleep(nanoseconds: 4_000_000_000)
+            if !Task.isCancelled { speaker.say("Still working it out.") }
+        }
+    }
+
+    /// Turns the planner's list of following presses into buttons on the current screen.
+    /// The list is cut at the first press that cannot be found, never skipped over.
+    private func stops(from presses: [PlanStep.FollowingPress], in reading: ScreenReading) -> [RouteStop] {
+        var result: [RouteStop] = []
+        for press in presses.prefix(12) {
+            let step = PlanStep(action: .tap, targetID: press.targetID, targetX: press.targetX, targetY: press.targetY,
+                                targetName: press.targetName, say: "", expect: press.expect,
+                                previousStepSucceeded: true, thenPress: nil)
+            guard let found = resolve(step, in: reading) else { break }
+            result.append(RouteStop(name: found.target.name, expect: press.expect, target: found.target,
+                                    label: found.label, say: "Press \(found.target.name)."))
+        }
+        return result
+    }
+
+    /// Finds a route button again on a newer reading of the screen, in case it has moved.
+    private func refreshed(_ stop: RouteStop, in reading: ScreenReading) -> RouteStop {
+        guard let label = stop.label?.lowercased() else { return stop }
+        let size = pipeline.screenSize ?? CGSize(width: 0.1, height: 0.1)
+        let matches = reading.elements.filter { $0.label.lowercased() == label }
+        func distance(_ element: ScreenElement) -> CGFloat {
+            hypot(element.center.x - stop.target.uv.x, element.center.y - stop.target.uv.y)
+        }
+        guard let best = matches.min(by: { distance($0) < distance($1) }), distance(best) < 0.25 else { return stop }
+        var updated = stop
+        updated.target.uv = best.center
+        updated.target.radius = Self.radius(for: best, screen: size)
+        return updated
+    }
+
+    /// True when the background check confirms the last press and is heading for the same button.
+    private static func agrees(_ verdict: PlanStep, withButton name: String) -> Bool {
+        guard verdict.previousStepSucceeded, verdict.action == .tap else { return false }
+        func key(_ text: String) -> String { text.lowercased().filter { $0.isLetter || $0.isNumber } }
+        let a = key(verdict.targetName), b = key(name)
+        return !a.isEmpty && !b.isEmpty && (a == b || a.contains(b) || b.contains(a))
+    }
+
+    /// Reads the screen after a press. As soon as a reading differs from before, the press has
+    /// registered and that reading is used; otherwise it looks once more before concluding
+    /// that nothing changed.
+    private func readAfterPress(before: ScreenReading) async -> (reading: ScreenReading, image: CGImage)? {
+        try? await Task.sleep(nanoseconds: 350_000_000)
+        guard var latest = await readScreen() else { return nil }
+        if Self.labels(of: latest.reading) != Self.labels(of: before) { return latest }
+        try? await Task.sleep(nanoseconds: 500_000_000)
+        if Task.isCancelled { return nil }
+        if let again = await pipeline.readScreenNow() { latest = again }
+        return latest
     }
 
     // MARK: Steps
@@ -538,7 +720,15 @@ final class TaskSession: ObservableObject {
         return await listener.listen(maxSeconds: maxSeconds)
     }
 
-    private func target(for step: PlanStep, in reading: ScreenReading) -> GuidanceEngine.Target? {
+    /// Aim for the label; the button is at least as big as its text.
+    private static func radius(for element: ScreenElement, screen size: CGSize) -> Float {
+        let halfWidth = Float(element.box.width * size.width) / 2
+        let halfHeight = Float(element.box.height * size.height) / 2
+        return min(max(max(halfWidth, halfHeight) * 0.8, 0.008), 0.02)
+    }
+
+    /// Where on the screen a planned press is, and the label the reader found there (if any).
+    private func resolve(_ step: PlanStep, in reading: ScreenReading) -> (target: GuidanceEngine.Target, label: String?)? {
         let size = pipeline.screenSize ?? CGSize(width: 0.1, height: 0.1)
         // Small models sometimes give an id that does not match the button they name.
         // The name is what gets spoken, so when the two disagree, trust the name.
@@ -555,25 +745,20 @@ final class TaskSession: ObservableObject {
         }
         if let index {
             let element = reading.elements[index]
-            // Aim for the label; the button is at least as big as its text.
-            let halfWidth = Float(element.box.width * size.width) / 2
-            let halfHeight = Float(element.box.height * size.height) / 2
-            let radius = min(max(max(halfWidth, halfHeight) * 0.8, 0.008), 0.02)
             let name = step.targetName.isEmpty ? element.label : step.targetName
-            return GuidanceEngine.Target(uv: element.center, radius: radius, name: name)
+            return (GuidanceEngine.Target(uv: element.center, radius: Self.radius(for: element, screen: size), name: name),
+                    element.label)
         }
         if step.targetID == -1, (0...100).contains(step.targetX), (0...100).contains(step.targetY),
            step.targetX + step.targetY > 0 {
             let uv = CGPoint(x: step.targetX / 100, y: step.targetY / 100)
-            return GuidanceEngine.Target(uv: uv, radius: 0.01, name: step.targetName.isEmpty ? "the button" : step.targetName)
+            return (GuidanceEngine.Target(uv: uv, radius: 0.01, name: step.targetName.isEmpty ? "the button" : step.targetName), nil)
         }
         return nil
     }
 
-    /// Guides the finger to the target. Returns true once the user has reached it and pulled
-    /// their hand away (which is when they will have tapped). False on timeout or cancel.
-    private func guide(to target: GuidanceEngine.Target) async -> Bool {
-        guard let size = pipeline.screenSize else { return false }
+    private func guide(to target: GuidanceEngine.Target, shouldInterrupt: () -> Bool = { false }) async -> GuideResult {
+        guard let size = pipeline.screenSize else { return .gaveUp }
         pipeline.setTarget(target.uv)
         guidance.begin(target: target, screenWidth: Float(size.width), screenHeight: Float(size.height))
         defer {
@@ -585,6 +770,7 @@ final class TaskSession: ObservableObject {
         var awaySince: Date?
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 50_000_000)
+            if shouldInterrupt() { return .interrupted }
             let snapshot = guidance.snapshot
             switch snapshot.phase {
             case .onTarget:
@@ -606,14 +792,14 @@ final class TaskSession: ObservableObject {
                 if away {
                     let since = awaySince ?? Date()
                     awaySince = since
-                    if Date().timeIntervalSince(since) > 0.6 { return true }
+                    if Date().timeIntervalSince(since) > 0.6 { return .pressed }
                 } else {
                     awaySince = nil
                 }
             }
-            if Date().timeIntervalSince(started) > 120 { return false }
+            if Date().timeIntervalSince(started) > 120 { return .gaveUp }
         }
-        return false
+        return .gaveUp
     }
 
     // MARK: Helpers
@@ -665,14 +851,14 @@ final class TaskSession: ObservableObject {
     /// JPEG of the flattened screen, scaled down for upload.
     private static func jpeg(from image: CGImage) -> Data? {
         let longest = CGFloat(max(image.width, image.height))
-        let scale = min(1, 1400 / longest)
+        let scale = min(1, 1100 / longest)
         let size = CGSize(width: CGFloat(image.width) * scale, height: CGFloat(image.height) * scale)
         let format = UIGraphicsImageRendererFormat()
         format.scale = 1
         let scaled = UIGraphicsImageRenderer(size: size, format: format).image { _ in
             UIImage(cgImage: image).draw(in: CGRect(origin: .zero, size: size))
         }
-        return scaled.jpegData(compressionQuality: 0.75)
+        return scaled.jpegData(compressionQuality: 0.65)
     }
 }
 

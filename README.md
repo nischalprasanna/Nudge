@@ -50,7 +50,7 @@ This is a hackathon prototype. Nothing in it has been clinically validated or ce
 
 - **Finding the screen.** Apple's Vision framework proposes rectangles; Nudge keeps the one that most tightly contains text, since a control panel is a rectangle full of labels, and ignores rectangles with no text in them. Its corners are placed in 3D with ARKit, on a plane fitted through 25 measured points, so button positions stay correct while the phone moves.
 - **Reading it.** A high-resolution still is flattened to a straight-on view and read with Vision text recognition on the phone. Keypad rows are split into separate buttons and two-line names ("TIME" over "COOK") are joined.
-- **Planning.** The planner is asked for one step at a time and is called again after every press with a fresh reading. That is what lets it notice a wrong press ("That opened Defrost; press Stop/Clear") instead of following a plan that no longer matches the screen.
+- **Planning.** The planner is asked for the whole route at once ("9, then 0, then Start"). After each press Nudge reads the screen again and moves straight on to the next button, while the planner checks that press in the background against the fresh reading. If the check disagrees ("The time still shows 0:00; press 9 again", or a wrong key, or a risky step ahead), guidance is interrupted and the check's answer is followed. Verifying this way costs no waiting when a press goes right.
 - **Tracking the finger.** Vision's hand tracker gives the index fingertip. LiDAR depth turns it into a 3D point, which is dropped straight down onto the screen plane, so the reported position is where the finger will land rather than where it appears from the camera's angle. When the hand hides the fingertip, a second tracker finds the part of the hand nearest the glass from depth alone.
 - **Guiding.** Tones carry the continuous guidance: they sit left or right with the button, rise in pitch when it is higher, and speed up as you close in. The voice says very little: a direction ("Left", or "Left a little" when nearly there) and "Tap". Once "Tap" has been given it stands until the finger clearly moves away, so a few millimetres of wobble do not bring the directions back.
 - **Knowing a press happened.** Nudge waits for the hand to leave the view, then reads the screen until two readings agree.
@@ -88,7 +88,7 @@ This table reflects our reading of the published descriptions of those systems, 
 - **Light.** Hand tracking failed often in a dim room and worked with the lights on.
 - **Icon-only screens.** Nudge only accepts something as a touchscreen if it can see at least three pieces of text on it; without that rule it locked onto desks and other plain rectangles. A screen made up only of icons is therefore not found at present.
 - **Framing.** If the camera is too close to see the panel's edges, Nudge can lock onto a smaller box inside it.
-- **Speed.** Each step takes about 2 seconds to plan and 2 more to confirm the screen has settled.
+- **Speed.** The first step takes about 2 to 4 seconds to plan. Later steps do not wait for the planner unless the screen fails to react, but each still needs the hand out of view for about a second so the screen can be read.
 - **Testing so far** has been on a photo of a microwave panel on a laptop and on a phone screen, not on a real appliance.
 
 ## Building
