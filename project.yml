@@ -1,0 +1,84 @@
+name: Nudge
+options:
+  bundleIdPrefix: com.nudgea11y
+  deploymentTarget:
+    iOS: "18.0"
+    watchOS: "11.0"
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+
+configFiles:
+  Debug: Config/Nudge.xcconfig
+  Release: Config/Nudge.xcconfig
+
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    CODE_SIGN_STYLE: Automatic
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ENABLE_USER_SCRIPT_SANDBOXING: "YES"
+
+targets:
+  Nudge:
+    type: application
+    platform: iOS
+    sources:
+      - Nudge
+      - Shared
+    dependencies:
+      - target: NudgeWatch
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nudgea11y.Nudge
+        TARGETED_DEVICE_FAMILY: "1"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: Nudge/Info.plist
+      properties:
+        CFBundleDisplayName: Nudge
+        UILaunchScreen: {}
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        UIRequiredDeviceCapabilities:
+          - arkit
+        NSCameraUsageDescription: Nudge uses the camera to read appliance touchscreens and guide your finger to the right button.
+        NSMicrophoneUsageDescription: Nudge listens for your spoken goal, such as "heat for 90 seconds".
+        NSSpeechRecognitionUsageDescription: Nudge turns your spoken goal into steps on the appliance.
+        NSMotionUsageDescription: Nudge uses AirPods head tracking so guidance sounds stay fixed on the button.
+        AnthropicAPIKey: $(ANTHROPIC_API_KEY)
+
+  NudgeWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - NudgeWatch
+      - Shared
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.nudgea11y.Nudge.watchkitapp
+        TARGETED_DEVICE_FAMILY: "4"
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+    info:
+      path: NudgeWatch/Info.plist
+      properties:
+        CFBundleDisplayName: Nudge
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.nudgea11y.Nudge
+        WKBackgroundModes:
+          - self-care
+
+schemes:
+  Nudge:
+    build:
+      targets:
+        Nudge: all
+        NudgeWatch: all
+    run:
+      config: Debug
+  NudgeWatch:
+    build:
+      targets:
+        NudgeWatch: all
+    run:
+      config: Debug

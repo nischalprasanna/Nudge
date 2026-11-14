@@ -1,0 +1,6 @@
+// Shared build settings for all targets.
+// Secrets.xcconfig is gitignored; copy Secrets.example.xcconfig to create it.
+DEVELOPMENT_TEAM = 33847454LD
+ANTHROPIC_API_KEY =
+
+#include? "Secrets.xcconfig"
