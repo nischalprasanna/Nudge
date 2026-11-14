@@ -1,4 +1,5 @@
 import ARKit
+import os
 import Combine
 import UIKit
 import simd
@@ -78,6 +79,22 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     /// Outlines that were read and found not to be a touchscreen, with when (system uptime).
     private var rejected: [(anchor: ScreenAnchor, at: TimeInterval)] = []
     private var lastSearchInfo = ""
+    /// The screen area with no hand in front of it, for `ScreenChangeFinder`, and which of its
+    /// pixels were in the camera's view when it was taken.
+    private var reference: ScreenChangeFinder.Sample?
+    private var referenceValid: [Bool] = []
+    private var wantsReference = false
+    private let changeFinder = ScreenChangeFinder()
+    /// Use the screen-change finder when the camera's hand tracker has no confident fingertip.
+    var usesScreenChangeFinder = true
+    /// How far beyond the screen's edges the finder looks, as a fraction of the screen's size.
+    /// A hand reaching in is picked up before it is over the screen itself.
+    private static let sampleMargin: Float = 0.3
+    /// Frames in which the finger came from the hand tracker, from the screen-change finder, or
+    /// was not found, since the current target was set.
+    private let counts = OSAllocatedUnfairLock(initialState: (tracker: 0, outline: 0, missing: 0))
+    private var pendingExpansion: (up: Float, down: Float, sides: Float, done: (Bool) -> Void)?
+    private var anchorBeforeExpansion: ScreenAnchor?
     private var wantsReadFromNextFrame = false
     private var smoothedUV: simd_float2?
     private var smoothedHover: Float?
@@ -158,6 +175,30 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         clearAnchor()
     }
 
+    /// Widens the anchored rectangle within its own plane, as fractions of its size: upward
+    /// (where a display usually is), downward and to both sides. Each side is taken as far as
+    /// asked or as far as the camera's view allows. Returns false if nothing could be added.
+    /// The detected outline is often just the block of keys; the display that shows whether a
+    /// press worked sits outside it.
+    func expandAnchor(up: Float, down: Float, sides: Float) async -> Bool {
+        await withCheckedContinuation { continuation in
+            visionQueue.async {
+                self.pendingExpansion = (up, down, sides, { done in
+                    DispatchQueue.main.async { continuation.resume(returning: done) }
+                })
+            }
+        }
+    }
+
+    /// Goes back to the rectangle as it was before `expandAnchor`.
+    func revertExpansion() {
+        visionQueue.async {
+            guard let earlier = self.anchorBeforeExpansion else { return }
+            self.anchorBeforeExpansion = nil
+            self.adopt(earlier, status: nil)
+        }
+    }
+
     func clearRejections() {
         visionQueue.async { self.rejected = [] }
     }
@@ -204,8 +245,12 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
 
     /// Marks a point on the screen (normalized) to highlight in the overlay. Nil clears it.
     func setTarget(_ uv: CGPoint?) {
+        if uv != nil { counts.withLock { $0 = (0, 0, 0) } }
         visionQueue.async { self.targetUV = uv }
     }
+
+    /// How the finger was found, frame by frame, since the current target was set.
+    var trackingCounts: (tracker: Int, outline: Int, missing: Int) { counts.withLock { $0 } }
 
     /// Re-reads the anchored screen and waits for the result. Nil if the screen could not be read.
     func readScreenNow(timeout: TimeInterval = 6) async -> (reading: ScreenReading, image: CGImage)? {
@@ -342,6 +387,11 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
             followScreen(detection.screens.filter(\.hasText), frame: frame, geometry: geometry)
         }
 
+        if let request = pendingExpansion {
+            pendingExpansion = nil
+            request.done(expand(by: request, geometry: geometry))
+        }
+
         var fingerState: FingerState?
         var pointerInImage = detection.fingertip?.point
         var pointerEstimated = false
@@ -380,6 +430,42 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                 }
             }
         }
+        if let anchor, usesScreenChangeFinder {
+            if wantsReference {
+                wantsReference = false
+                captureReference(frame.capturedImage, anchor: anchor, geometry: geometry)
+            } else if targetUV != nil, reference != nil {
+                // While guiding: where does something newly cover the screen?
+                let confident = fingerState != nil && (detection.fingertip?.confidence ?? 0) >= 0.5
+                if let seen = outlineFinger(frame.capturedImage, anchor: anchor, geometry: geometry) {
+                    var useOutline = !confident
+                    if confident, let tracked = fingerState {
+                        // The hand tracker is sure, but puts the finger somewhere the screen is
+                        // not covered. What is actually in front of the screen wins.
+                        let dx = Float(tracked.uv.x - seen.x) * anchor.width
+                        let dy = Float(tracked.uv.y - seen.y) * anchor.height
+                        useOutline = (dx * dx + dy * dy).squareRoot() > 0.03
+                    }
+                    if useOutline {
+                        let rawUV = simd_float2(Float(seen.x), Float(seen.y))
+                        let filtered = smoothedUV.map { $0 * 0.5 + rawUV * 0.5 } ?? rawUV
+                        smoothedUV = filtered
+                        fingerState = FingerState(uv: CGPoint(x: CGFloat(filtered.x), y: CGFloat(filtered.y)),
+                                                  hoverMeters: nil, method: .outline, confidence: 0.5,
+                                                  timestamp: frame.timestamp)
+                        pointerInImage = geometry.project(anchor.world(u: filtered.x, v: filtered.y))
+                        pointerEstimated = true
+                    }
+                }
+            }
+        }
+        if targetUV != nil {
+            let source = fingerState?.method
+            counts.withLock {
+                if source == nil { $0.missing += 1 } else if source == .outline { $0.outline += 1 } else { $0.tracker += 1 }
+            }
+        }
+
         // Keep the smoothing through a dropped frame or two; start afresh after a real gap.
         if fingerState != nil {
             lastFingerTime = frame.timestamp
@@ -464,9 +550,45 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
               : "Screen anchored")
     }
 
+    private func expand(by request: (up: Float, down: Float, sides: Float, done: (Bool) -> Void),
+                        geometry: FrameGeometry) -> Bool {
+        guard let current = anchor else { return false }
+
+        func grown(up: Float, down: Float, sides: Float) -> ScreenAnchor? {
+            let corners = [current.world(u: -sides, v: -up), current.world(u: 1 + sides, v: -up),
+                           current.world(u: 1 + sides, v: 1 + down), current.world(u: -sides, v: 1 + down)]
+            // Every corner has to be in the camera's view, or the area cannot be read.
+            for corner in corners {
+                guard let raw = geometry.project(corner),
+                      (0.0...1.0).contains(raw.x), (0.0...1.0).contains(raw.y) else { return nil }
+            }
+            return ScreenAnchor(topLeft: corners[0], topRight: corners[1], bottomRight: corners[2],
+                                bottomLeft: corners[3], cameraPosition: geometry.cameraPosition,
+                                createdAt: current.createdAt)
+        }
+
+        // Add one side at a time, each as far as it will go, so a side that is hard up against
+        // the edge of the picture does not stop the others.
+        var up: Float = 0, down: Float = 0, sides: Float = 0
+        let scales: [Float] = [1, 0.75, 0.5, 0.25]
+        if let scale = scales.first(where: { grown(up: request.up * $0, down: down, sides: sides) != nil }) { up = request.up * scale }
+        if let scale = scales.first(where: { grown(up: up, down: down, sides: request.sides * $0) != nil }) { sides = request.sides * scale }
+        if let scale = scales.first(where: { grown(up: up, down: request.down * $0, sides: sides) != nil }) { down = request.down * scale }
+        guard up + down + sides > 0, let wider = grown(up: up, down: down, sides: sides) else { return false }
+
+        anchorBeforeExpansion = current
+        // The wider area no longer matches any outline the camera detects, so it must not be
+        // "corrected" back to one.
+        anchorFromOutline = false
+        adopt(wider, status: "Screen anchored (widened)")
+        DebugLog.add(String(format: "anchor: widened up %.0f%%, down %.0f%%, sides %.0f%%", up * 100, down * 100, sides * 100))
+        return true
+    }
+
     /// Makes `newAnchor` the current anchor and tells the UI.
     private func adopt(_ newAnchor: ScreenAnchor, status: String?) {
         anchor = newAnchor
+        reference = nil
         surfaceOffset = nil
         resetSmoothing()
         let size = String(format: "%.0f by %.0f cm", newAnchor.width * 100, newAnchor.height * 100)
@@ -704,6 +826,81 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         return box.insetBy(dx: -pad, dy: -pad)
     }
 
+    // MARK: Screen-change finder
+
+    /// Takes a small picture of the screen and a margin around it, straightened out, by looking
+    /// up where each point of the anchored rectangle falls in the camera image.
+    private func sampleScreen(_ pixelBuffer: CVPixelBuffer, anchor: ScreenAnchor, geometry: FrameGeometry,
+                              against reference: ScreenChangeFinder.Sample?)
+        -> (sample: ScreenChangeFinder.Sample, valid: [Bool])? {
+        guard CVPixelBufferGetPlaneCount(pixelBuffer) >= 2 else { return nil }
+        CVPixelBufferLockBaseAddress(pixelBuffer, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(pixelBuffer, .readOnly) }
+        guard let lumaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 0),
+              let chromaBase = CVPixelBufferGetBaseAddressOfPlane(pixelBuffer, 1) else { return nil }
+        let lumaWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 0)
+        let lumaHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 0)
+        let lumaStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 0)
+        let chromaWidth = CVPixelBufferGetWidthOfPlane(pixelBuffer, 1)
+        let chromaHeight = CVPixelBufferGetHeightOfPlane(pixelBuffer, 1)
+        let chromaStride = CVPixelBufferGetBytesPerRowOfPlane(pixelBuffer, 1)
+
+        let margin = Self.sampleMargin
+        let width = 112
+        let height = min(max(Int(Float(width) * anchor.height / max(anchor.width, 0.001)), 40), 200)
+        if let reference, reference.width != width || reference.height != height { return nil }
+        let count = width * height
+        var sample = ScreenChangeFinder.Sample(width: width, height: height,
+                                               y: [UInt8](repeating: 0, count: count),
+                                               cb: [UInt8](repeating: 128, count: count),
+                                               cr: [UInt8](repeating: 128, count: count))
+        var valid = [Bool](repeating: false, count: count)
+        let span = 1 + 2 * margin
+        for row in 0..<height {
+            let v = -margin + (Float(row) + 0.5) / Float(height) * span
+            for column in 0..<width {
+                let u = -margin + (Float(column) + 0.5) / Float(width) * span
+                let index = row * width + column
+                if let raw = geometry.project(anchor.world(u: u, v: v)),
+                   raw.x >= 0, raw.x < 1, raw.y >= 0, raw.y < 1,
+                   reference == nil || referenceValid[index] {
+                    let px = min(Int(raw.x * CGFloat(lumaWidth)), lumaWidth - 1)
+                    let py = min(Int(raw.y * CGFloat(lumaHeight)), lumaHeight - 1)
+                    sample.y[index] = lumaBase.load(fromByteOffset: py * lumaStride + px, as: UInt8.self)
+                    let cx = min(px / 2, chromaWidth - 1), cy = min(py / 2, chromaHeight - 1)
+                    sample.cb[index] = chromaBase.load(fromByteOffset: cy * chromaStride + cx * 2, as: UInt8.self)
+                    sample.cr[index] = chromaBase.load(fromByteOffset: cy * chromaStride + cx * 2 + 1, as: UInt8.self)
+                    valid[index] = true
+                } else if let reference {
+                    // Out of the camera's view now, or when the reference was taken: call it unchanged.
+                    sample.y[index] = reference.y[index]
+                    sample.cb[index] = reference.cb[index]
+                    sample.cr[index] = reference.cr[index]
+                }
+            }
+        }
+        return (sample, valid)
+    }
+
+    private func captureReference(_ pixelBuffer: CVPixelBuffer, anchor: ScreenAnchor, geometry: FrameGeometry) {
+        guard let taken = sampleScreen(pixelBuffer, anchor: anchor, geometry: geometry, against: nil) else { return }
+        reference = taken.sample
+        referenceValid = taken.valid
+    }
+
+    /// Where the finger pad is over the screen (normalized, may fall outside 0...1), judged by
+    /// what newly covers the screen. Nil when nothing hand-like does.
+    private func outlineFinger(_ pixelBuffer: CVPixelBuffer, anchor: ScreenAnchor, geometry: FrameGeometry) -> CGPoint? {
+        guard let reference,
+              let now = sampleScreen(pixelBuffer, anchor: anchor, geometry: geometry, against: reference) else { return nil }
+        let span = 1 + 2 * Self.sampleMargin
+        guard let found = changeFinder.find(reference: reference, current: now.sample,
+                                            physicalWidth: anchor.width * span,
+                                            physicalHeight: anchor.height * span) else { return nil }
+        return CGPoint(x: CGFloat(-Self.sampleMargin) + found.contact.x * CGFloat(span),
+                       y: CGFloat(-Self.sampleMargin) + found.contact.y * CGFloat(span))
+    }
+
     /// Turns a LiDAR-only hand position into the same form as a seen fingertip.
     private func makeFingerState(from hand: DepthHandFinder.Result, timestamp: TimeInterval) -> FingerState {
         // Steadier smoothing than for a seen fingertip: this estimate is coarser.
@@ -758,6 +955,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
 
     /// Hands a finished (or failed) read to everyone waiting on it. Call on `visionQueue`.
     private func finishRead(_ reading: ScreenReading?, _ image: CGImage?) {
+        // A read happens with the hand out of the way, so the next frame is a clean picture
+        // of the screen to compare later ones against.
+        if reading != nil { wantsReference = true }
         let completions = readCompletions
         readCompletions = []
         guard !completions.isEmpty else { return }

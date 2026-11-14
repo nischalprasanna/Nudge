@@ -329,6 +329,21 @@ final class TaskSession: ObservableObject {
             }
             return
         }
+        // The outline found is often just the block of keys. Take in what is around it as well:
+        // above all the display, which is what shows whether a press worked. Kept only if it
+        // really does bring more labels into view.
+        if !reused, await pipeline.expandAnchor(up: 0.9, down: 0.2, sides: 0.25) {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+            if let wider = await pipeline.readScreenNow(),
+               wider.reading.elements.count >= current.reading.elements.count + 2 {
+                DebugLog.add("screen: widened area reads \(wider.reading.elements.count) labels (was \(current.reading.elements.count))")
+                current = wider
+            } else {
+                pipeline.revertExpansion()
+                try? await Task.sleep(nanoseconds: 150_000_000)
+            }
+        }
+        if Task.isCancelled { return }
         DebugLog.add("screen: found after \(String(format: "%.1f", Date().timeIntervalSince(searchStarted))) s, \(pipeline.screenSizeText), \(current.reading.elements.count) labels: \(current.reading.elements.map(\.label).joined(separator: " | "))")
         await speaker.sayAndWait("Found it.")
         if await stopIfPayment(current.reading) { return }
@@ -497,10 +512,10 @@ final class TaskSession: ObservableObject {
                 interruption = verdict
                 return true
             }
-            let stats = guidance.snapshot
-            DebugLog.add(String(format: "guide: \"%@\" %@ after %.1f s, finger seen in %d of %d frames", stop.name,
-                                result == .pressed ? "pressed" : (result == .interrupted ? "interrupted" : "gave up"),
-                                Date().timeIntervalSince(guideStarted), stats.framesSeen, stats.framesSeen + stats.framesMissed))
+            let found = pipeline.trackingCounts
+            DebugLog.add(String(format: "guide: \"%@\" %@ after %.1f s. Finger found by hand tracker in %d frames, by screen change in %d, not found in %d",
+                                stop.name, result == .pressed ? "pressed" : (result == .interrupted ? "interrupted" : "gave up"),
+                                Date().timeIntervalSince(guideStarted), found.tracker, found.outline, found.missing))
             switch result {
             case .interrupted:
                 // The last press did not do what was expected; follow the check instead.
@@ -793,7 +808,9 @@ final class TaskSession: ObservableObject {
             }
             if snapshot.hasArrived {
                 let finger = pipeline.finger
-                let away = finger.map { !(-0.3...1.3).contains($0.uv.x) || !(-0.3...1.3).contains($0.uv.y) } ?? true
+                // Gone from view, well off the screen, or well away from the button just pressed.
+                var away = finger.map { !(-0.3...1.3).contains($0.uv.x) || !(-0.3...1.3).contains($0.uv.y) } ?? true
+                if let distance = snapshot.distance, distance > 0.06 { away = true }
                 if away {
                     let since = awaySince ?? Date()
                     awaySince = since
