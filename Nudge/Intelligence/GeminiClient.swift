@@ -16,8 +16,9 @@ extension ClaudeClient: JSONModelClient {
 /// The free tier often answers "high demand" (503), so each request walks a short list of
 /// fast models with a tight timeout instead of waiting on one.
 struct GeminiClient: JSONModelClient {
-    /// Fast, vision-capable models, tried in order.
-    static let models = ["gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemini-flash-lite-latest"]
+    /// Vision-capable models, tried in order. In testing, 3.1 flash-lite recognised a wrong
+    /// press where the faster 3.5 flash-lite missed it, so it goes first despite being slower.
+    static let models = ["gemini-3.1-flash-lite", "gemini-3.5-flash-lite", "gemini-flash-lite-latest"]
 
     enum ClientError: LocalizedError {
         case http(status: Int, message: String)

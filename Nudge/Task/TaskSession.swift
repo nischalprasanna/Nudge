@@ -289,8 +289,21 @@ final class TaskSession: ObservableObject {
 
     private func target(for step: PlanStep, in reading: ScreenReading) -> GuidanceEngine.Target? {
         let size = pipeline.screenSize ?? CGSize(width: 0.1, height: 0.1)
-        if reading.elements.indices.contains(step.targetID) {
-            let element = reading.elements[step.targetID]
+        // Small models sometimes give an id that does not match the button they name.
+        // The name is what gets spoken, so when the two disagree, trust the name.
+        var index: Int? = reading.elements.indices.contains(step.targetID) ? step.targetID : nil
+        let wanted = step.targetName.lowercased().trimmingCharacters(in: .whitespaces)
+        if !wanted.isEmpty {
+            let matchesID = index.map { reading.elements[$0].label.lowercased().contains(wanted)
+                || wanted.contains(reading.elements[$0].label.lowercased()) } ?? false
+            if !matchesID,
+               let byName = reading.elements.firstIndex(where: { $0.label.lowercased() == wanted })
+                ?? reading.elements.firstIndex(where: { $0.label.lowercased().contains(wanted) }) {
+                index = byName
+            }
+        }
+        if let index {
+            let element = reading.elements[index]
             // Aim for the label; the button is at least as big as its text.
             let halfWidth = Float(element.box.width * size.width) / 2
             let halfHeight = Float(element.box.height * size.height) / 2
