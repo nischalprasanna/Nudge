@@ -18,7 +18,7 @@ This is a hackathon prototype. Nothing in it has been clinically validated or ce
 | Re-read the screen after each press | Working on device |
 | Recover from a wrong press | Correct in tests run from the Mac; not yet seen on device |
 | Payment screens refused, risky steps confirmed | Written; tested from the Mac, not on a real appliance |
-| Hover height from LiDAR | Works at a distance, unreliable within a centimetre or two of the glass |
+| Hover height from LiDAR | Measured, but too unreliable within a centimetre or two of the glass to speak about. The "Closer" and "Lift" prompts are switched off; the user is told once to keep the finger off the glass until "Tap" |
 | Hand tracking from LiDAR when the fingertip is hidden | Written and tested on synthetic data only |
 | Test log with CSV export | Written, not yet used |
 | Apple Watch haptics | Watch app builds; not yet installed or tested |
@@ -52,7 +52,7 @@ This is a hackathon prototype. Nothing in it has been clinically validated or ce
 - **Reading it.** A high-resolution still is flattened to a straight-on view and read with Vision text recognition on the phone. Keypad rows are split into separate buttons and two-line names ("TIME" over "COOK") are joined.
 - **Planning.** The planner is asked for one step at a time and is called again after every press with a fresh reading. That is what lets it notice a wrong press ("That opened Defrost; press Stop/Clear") instead of following a plan that no longer matches the screen.
 - **Tracking the finger.** Vision's hand tracker gives the index fingertip. LiDAR depth turns it into a 3D point, which is dropped straight down onto the screen plane, so the reported position is where the finger will land rather than where it appears from the camera's angle. When the hand hides the fingertip, a second tracker finds the part of the hand nearest the glass from depth alone.
-- **Guiding.** Tones carry the continuous guidance: they sit left or right with the button, rise in pitch when it is higher, and speed up as you close in. The voice says single words: a direction, "Closer", "Lift", "Tap".
+- **Guiding.** Tones carry the continuous guidance: they sit left or right with the button, rise in pitch when it is higher, and speed up as you close in. The voice says very little: a direction ("Left", or "Left a little" when nearly there) and "Tap". Once "Tap" has been given it stands until the finger clearly moves away, so a few millimetres of wobble do not bring the directions back.
 - **Knowing a press happened.** Nudge waits for the hand to leave the view, then reads the screen until two readings agree.
 
 ## What stays on the phone, and what does not

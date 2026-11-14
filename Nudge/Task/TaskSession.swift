@@ -71,7 +71,10 @@ final class TaskSession: ObservableObject {
     let visual = GuidanceVisual()
 
     /// One-word cues given during guidance. They drive the big word on screen, not the instruction line.
-    private static let cueWords: Set<String> = ["Left.", "Right.", "Up.", "Down.", "Closer.", "Lift.", "Tap."]
+    private static let cueWords: Set<String> = [
+        "Left.", "Right.", "Up.", "Down.", "Closer.", "Lift.", "Tap.",
+        "Left a little.", "Right a little.", "Up a little.", "Down a little.",
+    ]
 
     private let speaker = Speaker()
     private let listener = Listener()
@@ -402,6 +405,10 @@ final class TaskSession: ObservableObject {
                 }
                 trail.append(TrailStep(name: target.name, state: .current))
                 await speaker.sayAndWait(step.say.isEmpty ? "Next, press \(target.name)." : step.say)
+                if history.isEmpty, !Task.isCancelled {
+                    // Said once per task. Nudge no longer comments on height while guiding.
+                    await speaker.sayAndWait("Keep your finger just off the glass until I say tap.")
+                }
                 if Task.isCancelled { return }
 
                 phase = .guiding

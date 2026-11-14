@@ -15,7 +15,12 @@ struct FeedbackChannels: Equatable {
 /// waits on anything, so guidance keeps flowing regardless of network or speech.
 ///
 /// Division of labour: the beeps carry the continuous guidance. The voice says very little:
-/// one direction word when the direction changes, "closer" or "lift" for height, and "tap".
+/// one direction when the direction changes ("Left.", or "Left a little." when nearly there),
+/// and "Tap." once the finger is on the button.
+///
+/// "Tap" is a decision that sticks. Once it has been given, the finger wobbling by a few
+/// millimetres does not bring the directions back; only a clear move away from the button does.
+/// Flipping between "tap" and "left" while someone is trying to press is worse than no guidance.
 final class GuidanceEngine {
     struct Target {
         /// Centre of the button on the screen, normalized 0...1, origin top-left.
@@ -65,6 +70,12 @@ final class GuidanceEngine {
         var startedAt: TimeInterval = 0
         var lastApproachPulse: TimeInterval = 0
         var axis: Axis?
+        /// True while the finger is close enough for "a little" to be added to the direction.
+        var nearby = false
+        /// When "tap" was given, and since when the finger has been clearly off the button again.
+        var arrivedAt: TimeInterval?
+        var strayedSince: TimeInterval?
+        var remindedToPress = false
     }
 
     private let tones: ToneEngine
@@ -80,6 +91,10 @@ final class GuidanceEngine {
     var tapHeight: Float = 0.035
     /// Below this height while still far from the button, the user is told to lift (metres).
     var dragHeight: Float = 0.005
+    /// Speak about height ("Closer.", "Lift.") and hold back "tap" until the finger is low.
+    /// Off: LiDAR cannot tell a finger on the glass from one a centimetre above it, so these
+    /// words came at the wrong moments and contradicted "tap".
+    var usesHeightCues = false
 
     init(tones: ToneEngine, speaker: Speaker) {
         self.tones = tones
@@ -135,6 +150,7 @@ final class GuidanceEngine {
         let tapPhrase = self.tapPhrase
         let tapHeight = self.tapHeight
         let dragHeight = self.dragHeight
+        let usesHeightCues = self.usesHeightCues
 
         lock.withLockUnchecked { state in
             guard let target = state.target else { return }
@@ -145,7 +161,8 @@ final class GuidanceEngine {
                 state.snapshot.offset = nil
                 state.dwellStart = nil
                 state.lowestAbove = nil
-                if state.snapshot.phase != .seeking { state.snapshot.phase = .seeking }
+                // "Tap" stands while the hand is briefly out of sight (it is probably being taken away).
+                if state.snapshot.phase == .aboveTarget { state.snapshot.phase = .seeking }
                 // Only mention it if the finger has been missing for a while, and rarely.
                 if !state.snapshot.hasArrived,
                    now - max(state.snapshot.lastSeen, state.startedAt) > 3,
@@ -168,7 +185,35 @@ final class GuidanceEngine {
             state.snapshot.distance = distance
             state.snapshot.offset = SIMD2(dx, dy)
 
-            let wasOver = state.snapshot.phase == .onTarget || state.snapshot.phase == .aboveTarget
+            // "Tap" has been given. Hold that decision unless the finger clearly leaves the button.
+            if state.snapshot.phase == .onTarget {
+                let leave = max(target.radius * 2.5, 0.025)
+                if distance >= leave {
+                    if state.strayedSince == nil { state.strayedSince = now }
+                } else {
+                    state.strayedSince = nil
+                }
+                if let since = state.strayedSince, now - since > 0.7 {
+                    // Moved away without pressing: go back to giving directions, starting now.
+                    state.snapshot.phase = .seeking
+                    state.strayedSince = nil
+                    state.arrivedAt = nil
+                    state.dwellStart = nil
+                    state.lastVoiceText = ""
+                    state.lastVoiceTime = now - 10
+                } else {
+                    cue = .onTarget
+                    // Still there after a while: they may be waiting for something to happen.
+                    if !state.remindedToPress, let arrived = state.arrivedAt, now - arrived > 4 {
+                        state.remindedToPress = true
+                        state.lastVoiceTime = now
+                        say = "Press it, then take your hand away."
+                    }
+                    return
+                }
+            }
+
+            let wasOver = state.snapshot.phase == .aboveTarget
             // A little slack once over the button, so small tremors do not flip the state.
             let over = distance < (wasOver ? target.radius * 1.5 : target.radius)
 
@@ -176,7 +221,7 @@ final class GuidanceEngine {
                 // Over the button. Is the finger close enough to the glass to press it?
                 // If the height is unknown (no depth reading), assume it is.
                 var near = true
-                if let reported = finger.hoverMeters {
+                if usesHeightCues, let reported = finger.hoverMeters {
                     near = reported - state.touchHeight <= tapHeight
                     if near {
                         state.lowestAbove = nil
@@ -206,12 +251,16 @@ final class GuidanceEngine {
                 }
 
                 if near {
-                    cue = .onTarget
-                    if state.snapshot.phase == .onTarget { return }
+                    // Fast centred beeps for the moment it takes to be sure, then the chime and "tap".
+                    cue = .seek(pan: 0, rise: 0, closeness: 1)
                     if state.dwellStart == nil { state.dwellStart = now }
-                    if now - (state.dwellStart ?? now) >= 0.25 {
+                    if now - (state.dwellStart ?? now) >= 0.3 {
+                        cue = .onTarget
                         state.snapshot.phase = .onTarget
                         state.snapshot.hasArrived = true
+                        state.arrivedAt = now
+                        state.strayedSince = nil
+                        state.remindedToPress = false
                         state.lastVoiceTime = now
                         state.lastVoiceText = "tap"
                         say = tapPhrase
@@ -246,7 +295,7 @@ final class GuidanceEngine {
             }
 
             // Dragging along the glass while still away from the button would press other buttons.
-            if let hover = finger.hoverMeters, hover - state.touchHeight < dragHeight, distance > target.radius * 2.5,
+            if usesHeightCues, let hover = finger.hoverMeters, hover - state.touchHeight < dragHeight, distance > target.radius * 2.5,
                now - state.lastHeightPrompt > 4 {
                 state.lastHeightPrompt = now
                 state.lastVoiceTime = now
@@ -267,16 +316,24 @@ final class GuidanceEngine {
             if axis == .vertical, ay < target.radius * 0.7, ax >= target.radius * 0.7 { axis = .horizontal }
             state.axis = axis
 
-            let word: String
-            switch axis {
-            case .horizontal: word = dx > 0 ? "Right." : "Left."
-            case .vertical: word = dy > 0 ? "Down." : "Up."
+            // Close to the button the instruction says so, which stops the overshoot that
+            // otherwise turns into "left, right, left".
+            if state.nearby {
+                if distance > 0.04 { state.nearby = false }
+            } else if distance < 0.03 {
+                state.nearby = true
             }
+            let direction: String
+            switch axis {
+            case .horizontal: direction = dx > 0 ? "Right" : "Left"
+            case .vertical: direction = dy > 0 ? "Down" : "Up"
+            }
+            let word = state.nearby ? "\(direction) a little." : "\(direction)."
 
-            // Speak when the word changes (not more than about once a second),
-            // or as an occasional reminder if nothing has changed.
+            // Speak when the instruction changes (not more than about once every second and a
+            // half), or as an occasional reminder if nothing has changed.
             let sinceLast = now - state.lastVoiceTime
-            if (word != state.lastVoiceText && sinceLast > 1.1) || sinceLast > 4.5 {
+            if (word != state.lastVoiceText && sinceLast > 1.4) || sinceLast > 4 {
                 state.lastVoiceTime = now
                 state.lastVoiceText = word
                 say = word

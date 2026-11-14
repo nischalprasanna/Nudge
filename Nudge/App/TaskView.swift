@@ -266,7 +266,7 @@ private struct GuideStage: View {
             }
             Text(visual.word)
         }
-        .font(.system(size: 50, weight: .heavy, design: .rounded))
+        .font(.system(size: visual.word.count > 8 ? 40 : 50, weight: .heavy, design: .rounded))
         .foregroundStyle(onDisc ? Theme.ink : Theme.paper)
         .minimumScaleFactor(0.6)
         .lineLimit(1)
@@ -286,7 +286,8 @@ private struct GuideStage: View {
     }
 
     private var symbol: String? {
-        switch visual.word {
+        // "Left a little" takes the same arrow as "Left".
+        switch visual.word.split(separator: " ").first.map(String.init) ?? "" {
         case "Left": return "arrow.left"
         case "Right": return "arrow.right"
         case "Up": return "arrow.up"

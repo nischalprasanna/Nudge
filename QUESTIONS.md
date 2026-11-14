@@ -33,7 +33,10 @@ Written overnight, Saturday 14 November. Everything here was decided without you
 - **What I'd also do:** hold or mount the phone higher, looking down at the hand, so the fingertip is visible past the knuckles. Nudge now says this after it loses the finger a second time.
 - **If the fallback misbehaves:** it can be switched off in one line (`usesDepthFallback` in `PerceptionPipeline`), which returns to the previous behaviour.
 
-### 4. Keep the "Closer" height check, or drop it?
+### 4. Keep the "Closer" height check, or drop it? (Answered 14 Nov: dropped)
+
+- **Outcome:** the 11:31 recording showed "Closer" and "Lift" contradicting "Tap" while the finger was on the glass. Both are switched off (`usesHeightCues` in `GuidanceEngine`). Original question follows.
+
 
 - **Why it matters:** it caused the "closer, closer" problem while you were touching the screen.
 - **What I did:** height is now measured against the screen right beside the finger, and a finger that has stopped approaching for 1.2 seconds is treated as touching. Untested.
