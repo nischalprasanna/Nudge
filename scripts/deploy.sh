@@ -24,8 +24,24 @@ xcodebuild -project Nudge.xcodeproj -scheme Nudge -configuration Debug \
 [[ -d "$APP" ]] || { echo "Build did not produce $APP"; exit 1; }
 [[ "${1:-}" == "--build" ]] && exit 0
 
-# First connected iPhone.
-PHONE=$(xcrun devicectl list devices 2>/dev/null | awk '/iPhone/ && /(available|connected)/ {for (i=1;i<=NF;i++) if ($i ~ /^[0-9A-F]{8}-[0-9A-F]{4}-/) {print $i; exit}}')
+# First physical iPhone that is connected.
+DEVICES_JSON=$(mktemp)
+xcrun devicectl list devices --json-output "$DEVICES_JSON" >/dev/null 2>&1 || true
+PHONE=$(python3 -I - "$DEVICES_JSON" <<'EOF'
+import json, sys
+try:
+    devices = json.load(open(sys.argv[1]))["result"]["devices"]
+except Exception:
+    devices = []
+for d in devices:
+    hw = d.get("hardwareProperties", {})
+    if (hw.get("deviceType") == "iPhone" and hw.get("reality") == "physical"
+            and d.get("connectionProperties", {}).get("tunnelState") == "connected"):
+        print(d["identifier"])
+        break
+EOF
+)
+rm -f "$DEVICES_JSON"
 [[ -n "$PHONE" ]] || { echo "No iPhone found. Plug it in, unlock it and trust this Mac."; exit 1; }
 
 xcrun devicectl device install app --device "$PHONE" "$APP"
