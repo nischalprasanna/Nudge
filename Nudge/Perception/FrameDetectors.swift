@@ -120,6 +120,10 @@ final class FrameDetectors {
         return CGRect(x: minX, y: minY, width: maxX - minX, height: maxY - minY)
     }
 
+    /// Guess a hidden fingertip from the two joints behind it. Off: a guessed position that is
+    /// a centimetre or two out is worse for guidance than saying the finger cannot be seen.
+    var guessesHiddenTip = false
+
     private func fingertip() -> FingertipDetection? {
         guard let hand = handRequest.results?.first else { return nil }
         let tip = try? hand.recognizedPoint(.indexTip)
@@ -137,7 +141,7 @@ final class FrameDetectors {
 
         // The tip itself is hidden or blurred, but the two joints behind it are clear:
         // the tip lies a little further along the same line.
-        if let lastJoint, let middleJoint, lastJoint.confidence > 0.3, middleJoint.confidence > 0.3 {
+        if guessesHiddenTip, let lastJoint, let middleJoint, lastJoint.confidence > 0.3, middleJoint.confidence > 0.3 {
             let estimate = CGPoint(x: lastJoint.location.x + (lastJoint.location.x - middleJoint.location.x) * 0.9,
                                    y: lastJoint.location.y + (lastJoint.location.y - middleJoint.location.y) * 0.9)
             guard (0...1).contains(estimate.x), (0...1).contains(estimate.y) else { return nil }

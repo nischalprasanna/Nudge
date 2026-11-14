@@ -74,6 +74,8 @@ struct OpenAIClient: JSONModelClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        // Text-only answers arrive in about 2 seconds, picture ones in 4 to 6.
+        request.timeoutInterval = imageJPEG == nil ? 9 : 18
 
         var lastError: Error = ClientError.badResponse
         // One retry for transient failures (rate limit, server error, timeout, dropped connection).
@@ -145,6 +147,7 @@ struct FallbackClient: JSONModelClient {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                DebugLog.add("planner: \(client.displayName) failed: \(error.localizedDescription)")
                 lastError = error
             }
         }

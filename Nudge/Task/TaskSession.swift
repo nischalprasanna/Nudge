@@ -241,6 +241,7 @@ final class TaskSession: ObservableObject {
 
     /// Ends the task on a good note: chime, tick, and the closing sentence.
     private func succeed(_ text: String) async {
+        DebugLog.add("task done: \(text)")
         outcome = .done
         tones.playSuccess()
         Haptics.success()
@@ -249,6 +250,7 @@ final class TaskSession: ObservableObject {
 
     /// Ends the task with a problem: error sound and what went wrong.
     private func fail(_ text: String) async {
+        DebugLog.add("task failed: \(text)")
         outcome = .problem
         tones.playError()
         Haptics.warning()
@@ -327,6 +329,7 @@ final class TaskSession: ObservableObject {
             }
             return
         }
+        DebugLog.add("screen: found after \(String(format: "%.1f", Date().timeIntervalSince(searchStarted))) s, \(pipeline.screenSizeText), \(current.reading.elements.count) labels: \(current.reading.elements.map(\.label).joined(separator: " | "))")
         await speaker.sayAndWait("Found it.")
         if await stopIfPayment(current.reading) { return }
 
@@ -344,6 +347,7 @@ final class TaskSession: ObservableObject {
             return
         }
         goal = spokenGoal
+        DebugLog.add("goal: \"\(spokenGoal)\"\(typedGoal == nil ? "" : " (typed)")")
 
         // 4. Plan, guide, verify, repeat.
         var history: [CompletedStep] = []
@@ -365,22 +369,35 @@ final class TaskSession: ObservableObject {
                                       imageJPEG: attachImage ? Self.jpeg(from: current.image) : nil)
             sendImage = false
 
-            let step: PlanStep
-            // Never leave the user in silence: say so if this is taking a while, and give up
-            // with a clear message rather than hang.
-            let reassure = Task { [speaker] in
-                try? await Task.sleep(nanoseconds: 4_000_000_000)
-                if !Task.isCancelled { speaker.say("Still working it out.") }
+            // Never leave the user in silence, and never throw away a task that is going well
+            // because one request was slow: say so, and ask again before giving up.
+            DebugLog.add("plan: asking, \(current.reading.elements.count) labels, picture \(request.imageJPEG?.count ?? 0) bytes, step \(history.count + 1)")
+            var planned: PlanStep?
+            var planError: Error?
+            for attempt in 0..<3 {
+                let asked = Date()
+                let reassure = Task { [speaker] in
+                    try? await Task.sleep(nanoseconds: 4_000_000_000)
+                    if !Task.isCancelled { speaker.say(attempt == 0 ? "Still working it out." : "Nearly there.") }
+                }
+                do {
+                    planned = try await Self.plan(with: planner, request, deadline: request.imageJPEG == nil ? 10 : 20)
+                    reassure.cancel()
+                    DebugLog.add(String(format: "plan: answered in %.1f s", Date().timeIntervalSince(asked)))
+                    break
+                } catch {
+                    reassure.cancel()
+                    if Task.isCancelled { return }
+                    planError = error
+                    DebugLog.add(String(format: "plan: attempt %d failed after %.1f s: %@", attempt + 1,
+                                        Date().timeIntervalSince(asked), error.localizedDescription))
+                }
             }
-            do {
-                step = try await Self.plan(with: planner, request, deadline: 25)
-                reassure.cancel()
-            } catch {
-                reassure.cancel()
-                if Task.isCancelled { return }
-                await fail("I couldn't reach the planner. \(error.localizedDescription)")
+            guard let step = planned else {
+                await fail("I couldn't reach the planner. \(planError?.localizedDescription ?? "")")
                 return
             }
+            DebugLog.add("plan: \(step.action.rawValue) \"\(step.targetName)\" id \(step.targetID), say \"\(step.say)\", previous ok \(step.previousStepSucceeded)")
             if Task.isCancelled { return }
 
             switch step.action {
@@ -439,7 +456,11 @@ final class TaskSession: ObservableObject {
                 phase = .guiding
                 // Explain the hand-away step once; after that a single word is enough.
                 guidance.tapPhrase = history.isEmpty ? "Tap, then move your hand away." : "Tap."
-                guard await guide(to: target) else {
+                let guideStarted = Date()
+                let reached = await guide(to: target)
+                DebugLog.add(String(format: "guide: \"%@\" %@ after %.1f s", target.name, reached ? "pressed" : "gave up",
+                                    Date().timeIntervalSince(guideStarted)))
+                guard reached else {
                     if !Task.isCancelled {
                         await fail("I lost track of your finger for too long, so I've stopped.")
                     }
@@ -452,8 +473,12 @@ final class TaskSession: ObservableObject {
                 history.append(CompletedStep(targetName: target.name, expected: step.expect))
                 previous = current.reading
                 confirmedRisk = false
+                let readStarted = Date()
                 guard let fresh = await readSettledScreen(after: current.reading) else { return }
                 current = fresh
+                DebugLog.add(String(format: "read: %d labels after %.1f s, changed %@", fresh.reading.elements.count,
+                                    Date().timeIntervalSince(readStarted),
+                                    Self.labels(of: fresh.reading) != Self.labels(of: previous ?? fresh.reading) ? "yes" : "no"))
                 if await stopIfPayment(current.reading) { return }
             }
         }

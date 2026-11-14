@@ -19,7 +19,7 @@ This is a hackathon prototype. Nothing in it has been clinically validated or ce
 | Recover from a wrong press | Correct in tests run from the Mac; not yet seen on device |
 | Payment screens refused, risky steps confirmed | Written; tested from the Mac, not on a real appliance |
 | Hover height from LiDAR | Measured, but too unreliable within a centimetre or two of the glass to speak about. The "Closer" and "Lift" prompts are switched off; the user is told once to keep the finger off the glass until "Tap" |
-| Hand tracking from LiDAR when the fingertip is hidden | Written and tested on synthetic data only |
+| Hand tracking from LiDAR when the fingertip is hidden | Written, but switched off: on the phone it made the pointer jump |
 | Test log with CSV export | Written, not yet used |
 | Apple Watch haptics | Watch app builds; not yet installed or tested |
 | 3D spatial audio with head tracking | Not started (stereo tones are in) |
@@ -83,7 +83,7 @@ This table reflects our reading of the published descriptions of those systems, 
 
 ## Honest limitations
 
-- **Finger tracking is the weakest part.** If the hand hides the fingertip from the camera, tracking drops out. The LiDAR fallback has not been tried on real data yet. Holding the phone higher, so it looks down at the hand, helps.
+- **Finger tracking is the weakest part.** If the hand hides the fingertip from the camera, tracking drops out. A LiDAR fallback was tried and switched off because it made tracking less steady. Holding the phone higher, so it looks down at the hand, helps.
 - **Depth near the glass.** LiDAR is accurate to roughly a centimetre at this range, so Nudge cannot tell a finger 2 mm above the screen from one touching it.
 - **Light.** Hand tracking failed often in a dim room and worked with the lights on.
 - **Icon-only screens.** Nudge only accepts something as a touchscreen if it can see at least three pieces of text on it; without that rule it locked onto desks and other plain rectangles. A screen made up only of icons is therefore not found at present.

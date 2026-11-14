@@ -59,7 +59,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     private let detectors = FrameDetectors()
     private let handFinder = DepthHandFinder()
     /// Use LiDAR alone to place the hand when the camera cannot see the fingertip.
-    var usesDepthFallback = true
+    /// Off: on the phone it overrode correct but low-confidence fingertips with the knuckle or
+    /// another part of the hand, which made the pointer jump. Tracking was steadier without it.
+    var usesDepthFallback = false
     private let reader = ScreenReader()
 
     /// Only touched on `arQueue`.
