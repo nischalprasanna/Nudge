@@ -693,6 +693,13 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
            let raw = geometry.project(anchor.world(u: Float(targetUV.x), v: Float(targetUV.y))) {
             newOverlay.target = FrameGeometry.portrait(fromRaw: raw)
         }
+        // The app's own video of the task, for showing afterwards what Nudge saw.
+        if DemoRecorder.shared.isOn {
+            DemoRecorder.shared.add(pixelBuffer: frame.capturedImage,
+                                    marks: DemoRecorder.Marks(screen: newOverlay.anchored, target: newOverlay.target,
+                                                              fingertip: newOverlay.fingertip, fromLidar: newOverlay.fingertipEstimated),
+                                    time: frame.timestamp)
+        }
         let fps = smoothedFPS
         let aspect = geometry.portraitAspect
         let info = anchor == nil ? lastSearchInfo : ""

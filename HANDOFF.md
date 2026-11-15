@@ -61,6 +61,12 @@ Measured on a recording, then changed. See the end of this section for what was 
 - Every button is still there and works. Opening the app by voice is the system's "Hey Siri, open Nudge".
 - The low-vision magnifier was started and dropped at Nischal's request: not needed for the recorded demo.
 
+## The app's own task videos (Sunday about 1:45 AM, installed, rendering checked on the Mac, not yet made on the phone)
+
+- The phone's screen recording stops when Siri opens the app, so Nudge draws its own video of each task (`DemoRecorder`): the camera view with the screen outline, the key to press and the fingertip (labelled "hand tracker" or "LiDAR"), the one-word cue, and below it the status, what Nudge is saying, the goal and the keys pressed. 720 by 1280, no sound.
+- One video per task, from Start (or the hands-free opening) to the end, in `Documents/demo-videos` on the phone. Share from Settings > Task videos, or copy over the cable with `devicectl device copy from`.
+- On by default (Settings > Task videos). The frame-by-frame debug recorder is now off by default.
+
 ## Installing the Watch app (learned the hard way on 15 November)
 
 - Never install with `scripts/deploy.sh --phone-only` once the Watch app is in use: an iPhone app with no Watch app inside it makes the Watch delete its copy.

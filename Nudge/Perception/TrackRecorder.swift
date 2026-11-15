@@ -26,8 +26,8 @@ final class TrackRecorder {
     var isOn: Bool { UserDefaults.standard.bool(forKey: Self.settingKey) }
 
     init() {
-        // On by default while finger tracking is being worked on. Switch to false before the demo.
-        UserDefaults.standard.register(defaults: [Self.settingKey: true])
+        // Off unless switched on in Settings: it costs storage and some speed.
+        UserDefaults.standard.register(defaults: [Self.settingKey: false])
     }
 
     /// Starts a fresh file. Called when the camera starts.

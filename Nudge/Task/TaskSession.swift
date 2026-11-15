@@ -50,18 +50,42 @@ final class TaskSession: ObservableObject {
     enum Outcome: Equatable { case none, done, problem }
 
     @Published private(set) var phase: Phase = .idle {
-        didSet { if phase != .guiding { refreshVisual() } }
+        didSet {
+            if phase != .guiding { refreshVisual() }
+            syncCaption()
+        }
     }
-    @Published private(set) var isRunning = false
-    @Published private(set) var goal = ""
+    @Published private(set) var isRunning = false { didSet { syncCaption() } }
+    @Published private(set) var goal = "" { didSet { syncCaption() } }
     /// The current full instruction, as last spoken ("Press Time Cook.").
-    @Published private(set) var instruction = ""
-    @Published private(set) var trail: [TrailStep] = []
-    @Published private(set) var outcome: Outcome = .none
+    @Published private(set) var instruction = "" { didSet { syncCaption() } }
+    @Published private(set) var trail: [TrailStep] = [] { didSet { syncCaption() } }
+    @Published private(set) var outcome: Outcome = .none { didSet { syncCaption() } }
     @Published private(set) var transcript: [String] = []
     /// True while Nudge is asking for the goal before it has started looking for a screen
     /// (the hands-free opening). The task screen shows a greeting in place of the camera.
-    @Published private(set) var isGreeting = false
+    @Published private(set) var isGreeting = false { didSet { syncCaption() } }
+
+    /// Keeps the captions of the task's video in step with what the screen shows.
+    private func syncCaption() {
+        let status: String
+        if isRunning {
+            status = phase.rawValue
+        } else {
+            status = outcome == .done ? "Done" : (outcome == .problem ? "Stopped" : "Ready")
+        }
+        let cue = phase == .guiding ? visual.word : ""
+        let steps = trail.map { (name: $0.name, state: $0.state == .done ? 1 : ($0.state == .failed ? 2 : 0)) }
+        let goal = self.goal, instruction = self.instruction, greeting = isGreeting
+        DemoRecorder.shared.update {
+            $0.status = status
+            $0.instruction = instruction
+            $0.cue = cue
+            $0.goal = goal
+            $0.trail = steps
+            $0.greeting = greeting
+        }
+    }
     @Published private(set) var plannerName = "No planner (API key not set)"
     @Published var channels = TaskSession.savedChannels() {
         didSet {
@@ -110,6 +134,7 @@ final class TaskSession: ObservableObject {
             } else {
                 self.instruction = line
             }
+            self.syncCaption()
         }
         listener.onLevel = { [weak self] level in
             guard let self, self.phase == .listening else { return }
@@ -160,6 +185,8 @@ final class TaskSession: ObservableObject {
         Haptics.tap()
         if channels.watch { PhoneWatchLink.shared.sendGuidance(phase: .working) }
         attemptStarted = Date()
+        DemoRecorder.shared.begin()
+        syncCaption()
         runTask = Task { [weak self] in
             await self?.run(typedGoal: typedGoal, handsFree: handsFree)
             guard !Task.isCancelled else { return }
@@ -216,6 +243,7 @@ final class TaskSession: ObservableObject {
         pipeline.setTarget(nil)
         isRunning = false
         phase = .idle
+        DemoRecorder.shared.end()
     }
 
     private func applyChannels() {
@@ -1037,7 +1065,10 @@ final class TaskSession: ObservableObject {
                                            closeness: 1 - min(distance / 0.12, 1))
                 } else {
                     visual.mode = .working
-                    visual.word = ""
+                    if !visual.word.isEmpty {
+                        visual.word = ""
+                        syncCaption()
+                    }
                 }
             }
             if channels.watch {

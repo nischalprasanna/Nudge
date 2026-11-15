@@ -13,7 +13,9 @@ struct SettingsView: View {
     @AppStorage("channel.watch") private var watch = true
     @AppStorage("wornOnChest") private var wornOnChest = false
     @AppStorage("marker.on") private var markerOn = false
-    @AppStorage(TrackRecorder.settingKey) private var recordTracking = true
+    @AppStorage(TrackRecorder.settingKey) private var recordTracking = false
+    @AppStorage(DemoRecorder.settingKey) private var demoVideo = true
+    @State private var videos: [URL] = []
     @AppStorage(DemoSafe.onKey) private var demoSafe = false
     @AppStorage(DemoSafe.deviceKey) private var demoDevice = ""
     @ObservedObject private var store = DeviceStore.shared
@@ -118,6 +120,35 @@ struct SettingsView: View {
                     LabeledContent("Step planning", value: plannerName)
                     LabeledContent("Apple Watch", value: watchLink.status)
                 }
+
+                Section {
+                    Toggle(isOn: $demoVideo) {
+                        Label("Make a video of each task", systemImage: "video")
+                    }
+                    if let latest = videos.first {
+                        ShareLink(item: latest) {
+                            Label("Share the latest video", systemImage: "square.and.arrow.up")
+                        }
+                        if videos.count > 1 {
+                            NavigationLink("All \(videos.count) videos") {
+                                List(videos, id: \.self) { url in
+                                    ShareLink(item: url) {
+                                        Text(url.deletingPathExtension().lastPathComponent)
+                                    }
+                                }
+                                .navigationTitle("Task videos")
+                            }
+                        }
+                    } else {
+                        Text("No videos yet.")
+                            .foregroundStyle(.secondary)
+                    }
+                } header: {
+                    Text("Task videos")
+                } footer: {
+                    Text("Nudge draws its own video of each task: the camera view with the screen outline, the key to press and your fingertip marked, and what it is saying underneath. It works with the screen off and is not stopped by Siri. There is no sound. The newest twelve are kept on this phone.")
+                }
+                .onAppear { videos = DemoRecorder.videos }
 
                 Section {
                     LabeledContent("Attempts recorded", value: "\(log.records.count)")
