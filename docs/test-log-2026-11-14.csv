@@ -1,0 +1,54 @@
+started_at,device,goal,outcome,reason,steps_completed,recoveries,seconds,channels,planner
+2026-11-14T16:56:53Z,Unsaved screen (37 by 23 cm),Press one,stopped,I didn't catch that. What would you like to do?,0,0,24.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:10:37Z,Unsaved screen (8 by 20 cm),Press one,stopped,Press 1.,0,0,35.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:11:18Z,Unsaved screen (8 by 20 cm),Press six,stopped,Press six.,0,0,18.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:19:38Z,Unsaved screen (9 by 20 cm),Heat to 90 seconds,stopped,The screen has not changed; press Time Cook again.,1,1,49.5,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:30:05Z,Unsaved screen (8 by 20 cm),Press one,stopped,The display still shows the clock. Press 1 again.,0,1,57.9,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:31:13Z,Unsaved screen (8 by 20 cm),One,stopped,Press 1.,1,0,31.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:37:00Z,Unsaved screen (28 by 21 cm),One press one,stopped,Keep your finger just off the glass until I say tap.,0,0,51.4,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:38:03Z,Unsaved screen (28 by 21 cm),Add 30 seconds,stopped,What would you like to do?,0,0,50.9,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:39:00Z,Unsaved screen (28 by 21 cm),Reheat to 90 seconds,stopped,Keep your finger just off the glass until I say tap.,1,0,43.4,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:40:05Z,Unsaved screen (28 by 21 cm),Reheat,stopped,I can't see your finger.,1,1,69.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:41:30Z,Unsaved screen (28 by 21 cm),One I wanna press one,failed,I can’t tell which button you want; please clarify what you’d like to do.,0,0,16.5,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:41:48Z,Unsaved screen (28 by 21 cm),I want to press the number one,stopped,What would you like to do?,0,0,27.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:42:16Z,Unsaved screen (28 by 21 cm),I want to defrost,stopped,Keep your finger just off the glass until I say tap.,0,0,21.5,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:42:39Z,Unsaved screen (28 by 21 cm),I want to push defrost,stopped,I can't see your finger.,0,0,20.5,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:55:49Z,Unsaved screen (28 by 21 cm),I want to reheat,stopped,What would you like to do?,0,0,38.3,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:56:37Z,Unsaved screen (28 by 21 cm),Press one,stopped,What would you like to do?,0,0,39.9,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T17:57:21Z,Unsaved screen (28 by 21 cm),I want to press one,stopped,What would you like to do?,0,0,29.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:09:59Z,Unsaved screen (6 by 8 cm),I wanna cook for 90 seconds,failed,I couldn't reach the planner. It took too long to answer.,2,0,112.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:17:11Z,Unsaved screen (6 by 8 cm),Cook for 90 seconds,stopped,"The screen still shows the keypad, so the last press may not have registered. Press Start again.",2,1,143.2,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:29:49Z,Unsaved screen (6 by 8 cm),Cook for 90 seconds,stopped,Still working it out.,1,0,74.6,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:31:14Z,Unsaved screen (5 by 7 cm),Cook for 90 seconds,stopped,Still working it out.,0,0,50.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:32:05Z,Unsaved screen (6 by 7 cm),Cook for 90 seconds,stopped,Still working it out.,3,0,121.0,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:44:25Z,Unsaved screen (6 by 8 cm),Cook for 90 seconds,stopped,I can't see your finger.,0,1,52.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:45:28Z,Unsaved screen (6 by 8 cm),Cook for 90 seconds,stopped,Press 9.,0,0,20.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:45:51Z,Unsaved screen (6 by 8 cm),Cook for 90 seconds,stopped,"The screen looks unchanged, so press 0 again.",1,1,51.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:56:13Z,Unsaved screen (9 by 17 cm),Cook for 90 seconds,stopped,Keep your finger just off the glass until I say tap.,0,0,41.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T18:57:10Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,stopped,Press 9.,0,0,27.9,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T19:03:03Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,success,,3,0,77.3,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T19:06:09Z,Unsaved screen (9 by 16 cm),I want to reheat to 90 seconds,stopped,I can't see your finger.,0,0,30.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T19:07:07Z,Unsaved screen (9 by 16 cm),I reheat to 20 seconds,stopped,"The display shows 2 minutes, not 20 seconds; press Stop to clear it.",2,1,80.9,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T19:36:37Z,Unsaved screen (9 by 16 cm),Reheat for 90 seconds,stopped,Keep your finger just off the glass until I say tap.,0,0,59.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T19:37:50Z,Unsaved screen (8 by 16 cm),I wanna reheat for 90 seconds,stopped,"Next, press Reheat.",0,0,67.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T19:38:59Z,Unsaved screen (9 by 16 cm),Heat for 90 seconds reheat for 90 seconds,stopped,Press Start.,2,0,69.5,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T19:51:31Z,Unsaved screen (9 by 16 cm),reheat to 90 seconds,stopped,Press 0.,3,0,135.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:16:14Z,Unsaved screen (9 by 16 cm),Reheat 90 seconds,stopped,Still working it out.,3,1,117.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:18:13Z,Unsaved screen (9 by 16 cm),Reheat 90 seconds,stopped,Press 0.,1,0,48.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:19:02Z,Unsaved screen,(no goal reached),stopped,Point the phone at the touchscreen.,0,0,8.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:19:10Z,Unsaved screen (8 by 15 cm),Cook 90 seconds,stopped,"Hold the phone higher, so it looks down at your hand.",0,0,40.6,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:19:52Z,Unsaved screen (24 by 21 cm),Press the number nine,success,,1,0,54.6,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:20:49Z,Unsaved screen (9 by 16 cm),Coke 90 seconds,stopped,I can't see your finger.,0,0,32.3,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:23:20Z,Unsaved screen,(no goal reached),stopped,Point the phone at the touchscreen.,0,0,1.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:34:57Z,Unsaved screen (8 by 16 cm),Cook for 90 seconds,success,,4,0,108.4,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:46:38Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,stopped,Press Start.,3,0,65.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T20:55:01Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,success,,3,0,83.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T21:02:17Z,Unsaved screen (26 by 15 cm),Cook for 90 seconds,success,,3,0,100.6,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T22:07:01Z,Unsaved screen,(no goal reached),stopped,Point the phone at the touchscreen.,0,0,2.0,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T22:14:17Z,Unsaved screen (9 by 16 cm),reheat to 90 seconds,stopped,Still working it out.,1,0,46.8,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T22:15:46Z,Unsaved screen (9 by 18 cm),Cook for 90 seconds,stopped,Move the phone back a little.,1,0,41.3,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T22:16:29Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,stopped,Tilt the phone down a little.,2,0,54.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T23:50:31Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,success,,3,0,69.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-14T23:51:57Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,success,,3,0,80.3,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-15T01:58:59Z,Unsaved screen (9 by 16 cm),Cook for 90 seconds,success,,3,0,82.7,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
+2026-11-15T02:00:30Z,Unsaved screen (8 by 16 cm),Cook for 90 seconds,success,,4,2,142.1,tones+voice+watch,OpenAI (gpt-6-luna) + 1 backup
