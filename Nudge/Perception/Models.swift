@@ -41,6 +41,9 @@ struct FingerState: Equatable {
         case outline
         /// A coloured marker on the fingernail, found by its colour and placed with LiDAR.
         case marker
+        /// The hand tracker saw no fingertip; this is the end of the finger as LiDAR sees it,
+        /// a ridge standing proud of the screen.
+        case ridge
     }
 
     /// Landing position on the screen, normalized 0...1, origin top-left. Can fall outside 0...1.

@@ -1,4 +1,4 @@
-# Handoff: Saturday 14 November, about 6:15 PM
+# Handoff: Saturday 14 November (last updated about 8:45 PM)
 
 Written when work moved from Nischal's Mac to another laptop. Read `CLAUDE.md` first (the brief), then this.
 
@@ -21,7 +21,7 @@ Written when work moved from Nischal's Mac to another laptop. Read `CLAUDE.md` f
 
 ## Finger tracking: what was found, and what to do next
 
-This was the task in progress. Nothing in the tracking has been changed yet.
+Measured on a recording, then changed. See the end of this section for what was built.
 
 **How it was measured.** The app now has a recorder (Settings > Test tools > "Record tracking frames", on by default in this build). While guiding, it keeps camera frames, LiDAR depth and the tracker's answers in `Documents/track.bin` on the phone. `Tools/track-replay` replays that file on a Mac. Running Apple's hand tracker on the recorded frames on the Mac gave the same answer as the phone (482 of 800 frames against 483), so the replay can be trusted for testing changes.
 
@@ -33,13 +33,14 @@ This was the task in progress. Nothing in the tracking has been changed yet.
 - The phone offers ARKit no ultra-wide camera format, so a wider view is not available.
 - LiDAR sees the bare finger very clearly in every lost frame looked at: a clean ridge 2 to 8 cm above the screen plane, with the screen itself flat within about 5 mm. Near the tip, where the finger meets the glass, the ridge fades out, so the depth outline ends a little short of the true fingertip.
 
-**Next steps, in order:**
+**What was built from that (Saturday about 8:45 PM, installed, not yet tried on the phone):**
 
-1. Write a backup finder that is used only when Apple's tracker reports no hand: take the LiDAR points above the screen plane that connect to the edge of the picture, and report the end of that shape furthest from where it enters. Correct for the tip falling short (extend along the finger's direction, or refine with the camera picture). Measure it with the replay tool against frames where Apple's tracker does see the finger, so its error is known before it ships. An older attempt at this (`DepthHandFinder`, switched off) reported the knuckle nearest the glass and jumped; do not just switch that back on.
-2. Widen the framing coaching so the palm stays in view: the hand comes from the bottom right, so the key should end up no lower than about half way down and not far right of centre. The rule today only asks for 60% down.
-3. Check the suspected jitter source: `locateFinger` in `PerceptionPipeline` switches frame by frame between a LiDAR-corrected position and a plain camera-line position. The recording has what is needed to measure this.
-
-Keep every change behind a switch, and test it on the recording before installing it. Changes to tracking made without that today were reverted three times.
+- `DepthFingerFinder`: finds the finger as a ridge in the LiDAR depth. Used on its own when Apple's tracker reports no fingertip, once it has held steady for a tenth of a second. On the recording it agrees with Apple's tracker to 2.7 mm at the median (10 mm at the 90th percentile), and brings the frames with a finger position from 483 to 644 of 800. On Start in the second run: 75 to 177 of 182 frames, longest loss 3.8 s down to 0.2 s.
+- When Apple's tracker does see the fingertip, its point in the picture is now combined with the ridge's height. The old way read depth at the single fingertip pixel, which flips between finger and glass; the reported position jumped more than 8 mm in 26 of 433 frame pairs. With the ridge's height it is 1.
+- Switch: `usesDepthFinger` in `PerceptionPipeline`. False returns to Apple's tracker alone.
+- Known limits: nothing is reported while the hand moves fast (LiDAR smears, and the finder stays silent on purpose); with a finger pressed flat on the glass the ridge can end up to about 8 mm short of the tip; the sideways correction (`registrationShift`) was measured with one hand position and one phone.
+- Not done: widening the framing coaching. Left as it is until the backup has been tried, since more coaching means more talking before each key.
+- `Tools/track-replay/build.sh` builds the scoring tools (`ridgetest` is the one that produced the numbers above).
 
 **The recording itself** is not in git (356 MB). A copy is on Nischal's Mac at `recordings/track1.bin`. The copy on the phone is deleted the next time the task screen opens.
 

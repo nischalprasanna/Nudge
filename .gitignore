@@ -20,3 +20,5 @@ xcuserdata/
 Tools/track-replay/replay
 Tools/track-replay/depthview
 *.bin
+Tools/track-replay/ridgetest
+Tools/track-replay/heights

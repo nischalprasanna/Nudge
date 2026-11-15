@@ -68,6 +68,15 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     /// Off: on the phone it overrode correct but low-confidence fingertips with the knuckle or
     /// another part of the hand, which made the pointer jump. Tracking was steadier without it.
     var usesDepthFallback = false
+    /// Uses LiDAR's view of the finger as a ridge above the screen: for the finger's height when
+    /// the hand tracker sees the fingertip, and for its position when the tracker sees no hand.
+    /// Set to false to go back to the hand tracker alone.
+    var usesDepthFinger = true
+    private var fingerFinder = DepthFingerFinder()
+    private var lastRidge: (time: TimeInterval, at: simd_float2)?
+    private var ridgeSince: TimeInterval?
+    private var ridgeSeconds = 0.0
+    private var ridgeRuns = 0
     /// Test tool: keeps camera frames while guiding, for measuring tracking changes on a Mac.
     let recorder = TrackRecorder()
     private var loggedFormats = false
@@ -487,9 +496,42 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         var fingerState: FingerState?
         var pointerInImage = detection.fingertip?.point
         var pointerEstimated = false
+        var ridge: DepthFingerFinder.Result?
         if let anchor {
+            // LiDAR's own view of the finger, as a ridge standing proud of the screen.
+            if usesDepthFinger, targetUV != nil, !markerOn, let depthData = frame.sceneDepth {
+                let began = CACurrentMediaTime()
+                ridge = withDepth(depthData) { fingerFinder.find($0, geometry: geometry, anchor: anchor) } ?? nil
+                ridgeSeconds += CACurrentMediaTime() - began
+                ridgeRuns += 1
+                if ridgeRuns == 600 {
+                    DebugLog.add(String(format: "ridge: %.1f ms a frame on average, camera at %.0f frames a second", ridgeSeconds / 600 * 1000, smoothedFPS))
+                    ridgeSeconds = 0
+                    ridgeRuns = 0
+                }
+            }
+            // On its own it is only believed once it has held steady for a moment.
+            var ridgeSteady = false
+            if let ridge {
+                let at = simd_float2(Float(ridge.uv.x) * anchor.width, Float(ridge.uv.y) * anchor.height)
+                if let last = lastRidge, frame.timestamp - last.time < 0.12, simd_distance(last.at, at) < 0.025 {
+                    ridgeSteady = frame.timestamp - (ridgeSince ?? frame.timestamp) >= 0.1
+                } else {
+                    ridgeSince = frame.timestamp
+                }
+                lastRidge = (frame.timestamp, at)
+            } else {
+                lastRidge = nil
+                ridgeSince = nil
+            }
             if let tip = detection.fingertip {
-                fingerState = locateFinger(tip, on: anchor, frame: frame, geometry: geometry)
+                fingerState = locateFinger(tip, on: anchor, frame: frame, geometry: geometry, ridge: ridge)
+            } else if let ridge, ridgeSteady {
+                // The hand tracker sees no fingertip (it needs the palm in view), but the finger
+                // is there in the depth.
+                fingerState = makeFingerState(from: ridge, timestamp: frame.timestamp)
+                pointerInImage = ridge.imagePoint
+                pointerEstimated = true
             }
             // When the camera's hand tracker sees a hand but not its fingertip (or only a shaky
             // guess at it), ask LiDAR which part of that hand is nearest the glass. Never without
@@ -604,6 +646,9 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
                 "uv": pair(fingerState?.uv),
                 "method": fingerState?.method.rawValue ?? "",
                 "hover": fingerState?.hoverMeters.map { $0 as Any } ?? NSNull(),
+                "ridge": pair(ridge?.imagePoint),
+                "ridgeUV": pair(ridge?.uv),
+                "ridgeHover": ridge.map { $0.hover as Any } ?? NSNull(),
             ]
             if let box = detection.handBox {
                 info["handBox"] = [box.minX, box.minY, box.width, box.height]
@@ -613,7 +658,7 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         if targetUV != nil {
             let source = fingerState?.method
             counts.withLock {
-                if source == nil { $0.missing += 1 } else if source == .outline { $0.outline += 1 } else { $0.tracker += 1 }
+                if source == nil { $0.missing += 1 } else if source == .outline || source == .ridge { $0.outline += 1 } else { $0.tracker += 1 }
             }
         }
 
@@ -872,7 +917,8 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     }
 
     private func locateFinger(_ tip: FingertipDetection, on anchor: ScreenAnchor,
-                              frame: ARFrame, geometry: FrameGeometry) -> FingerState? {
+                              frame: ARFrame, geometry: FrameGeometry,
+                              ridge: DepthFingerFinder.Result? = nil) -> FingerState? {
         var uv: CGPoint?
         var hover: Float?
         var method = FingerState.Method.ray
@@ -880,9 +926,32 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
         let ray = geometry.ray(throughRaw: tip.point)
         let rayHit = anchor.intersect(rayOrigin: ray.origin, direction: ray.direction)
 
+        // Best: the tracker's fingertip in the picture, at the height LiDAR gives the finger as a
+        // whole. The depth at the exact fingertip pixel sits on the edge of the finger and flips
+        // between finger and glass from frame to frame, which moved the reported position by a
+        // centimetre or two while the finger was still. On recorded frames that happened in 26
+        // of 433 frame pairs; with the ridge's height, in 1.
+        if let ridge {
+            let denominator = simd_dot(ray.direction, anchor.normal)
+            if abs(denominator) > 1e-5 {
+                let distance = simd_dot(anchor.origin + anchor.normal * ridge.top - ray.origin, anchor.normal) / denominator
+                if distance > 0 {
+                    let located = anchor.locate(ray.origin + ray.direction * distance)
+                    let dx = Float(located.uv.x - ridge.uv.x) * anchor.width
+                    let dy = Float(located.uv.y - ridge.uv.y) * anchor.height
+                    // Only when both are plainly looking at the same finger.
+                    if (dx * dx + dy * dy).squareRoot() < 0.03 {
+                        uv = located.uv
+                        hover = ridge.hover
+                        method = .lidar
+                    }
+                }
+            }
+        }
+
         // Preferred: real 3D fingertip from LiDAR, dropped straight down onto the glass.
         // This removes parallax, so the reported spot is where the finger will actually land.
-        if let depthData = frame.sceneDepth,
+        if uv == nil, let depthData = frame.sceneDepth,
            let depth = DepthSampler.depth(in: depthData, atRaw: tip.point, radius: 1,
                                           percentile: 0.25, minimumConfidence: 0) {
             let backOfFinger = geometry.unproject(raw: tip.point, depth: depth)
@@ -1143,6 +1212,41 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
     }
 
     /// Turns a LiDAR-only hand position into the same form as a seen fingertip.
+    private func makeFingerState(from ridge: DepthFingerFinder.Result, timestamp: TimeInterval) -> FingerState {
+        let rawUV = simd_float2(Float(ridge.uv.x), Float(ridge.uv.y))
+        let filteredUV = smoothedUV.map { $0 * 0.5 + rawUV * 0.5 } ?? rawUV
+        smoothedUV = filteredUV
+        smoothedHover = smoothedHover.map { $0 * 0.6 + ridge.hover * 0.4 } ?? ridge.hover
+        return FingerState(uv: CGPoint(x: CGFloat(filteredUV.x), y: CGFloat(filteredUV.y)),
+                           hoverMeters: smoothedHover, method: .ridge,
+                           confidence: 0.5, timestamp: timestamp)
+    }
+
+    /// Hands the frame's depth map to `body` in the form the finger finder takes.
+    private func withDepth<T>(_ data: ARDepthData, _ body: (DepthFingerFinder.Depth) -> T) -> T? {
+        let map = data.depthMap
+        guard CVPixelBufferGetPixelFormatType(map) == kCVPixelFormatType_DepthFloat32 else { return nil }
+        CVPixelBufferLockBaseAddress(map, .readOnly)
+        defer { CVPixelBufferUnlockBaseAddress(map, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddress(map) else { return nil }
+        let width = CVPixelBufferGetWidth(map), height = CVPixelBufferGetHeight(map)
+        var depth = DepthFingerFinder.Depth(width: width, height: height,
+                                            values: UnsafePointer(base.assumingMemoryBound(to: Float32.self)),
+                                            rowLength: CVPixelBufferGetBytesPerRow(map) / MemoryLayout<Float32>.size)
+        var locked: CVPixelBuffer?
+        if let confidence = data.confidenceMap,
+           CVPixelBufferGetWidth(confidence) == width, CVPixelBufferGetHeight(confidence) == height {
+            CVPixelBufferLockBaseAddress(confidence, .readOnly)
+            locked = confidence
+            if let confidenceBase = CVPixelBufferGetBaseAddress(confidence) {
+                depth.confidence = UnsafePointer(confidenceBase.assumingMemoryBound(to: UInt8.self))
+                depth.confidenceRowLength = CVPixelBufferGetBytesPerRow(confidence)
+            }
+        }
+        defer { if let locked { CVPixelBufferUnlockBaseAddress(locked, .readOnly) } }
+        return body(depth)
+    }
+
     private func makeFingerState(from hand: DepthHandFinder.Result, timestamp: TimeInterval) -> FingerState {
         // Steadier smoothing than for a seen fingertip: this estimate is coarser.
         let rawUV = simd_float2(Float(hand.uv.x), Float(hand.uv.y))
@@ -1169,6 +1273,11 @@ final class PerceptionPipeline: NSObject, ObservableObject, ARSessionDelegate, @
             return
         }
         let geometry = FrameGeometry(frame: frame)
+        // The screen is read with no hand in view, which is the moment to note what stands
+        // around the screen, so that it is not later taken for part of a hand.
+        if usesDepthFinger, let depthData = frame.sceneDepth {
+            _ = withDepth(depthData) { fingerFinder.learnBackground($0, geometry: geometry, anchor: anchor) }
+        }
         guard let image = reader.rectify(pixelBuffer: frame.capturedImage, anchor: anchor, geometry: geometry) else {
             DispatchQueue.main.async {
                 self.isReading = false
