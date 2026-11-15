@@ -44,10 +44,20 @@ Measured on a recording, then changed. See the end of this section for what was 
 
 **The recording itself** is not in git (356 MB). A copy is on Nischal's Mac at `recordings/track1.bin`. The copy on the phone is deleted the next time the task screen opens.
 
+## Saved devices and demo-safe mode (Saturday about 9:30 PM, installed, not yet tried on the phone)
+
+- After a task that goes right first time on a new device, Nudge asks by voice whether to remember it and what to call it. It keeps key labels and positions only (`Documents/nudge-devices.json`), plus the keys pressed for that goal.
+- A saved device is recognised from the labels that are read correctly (the digits, mostly). Its saved labels then replace misread ones, and keys the reader missed are put back. This also fixes the planner being misled by garbled labels.
+- Saying a goal done before on that device replays its keys at once with no network (`RoutinePlanner`). A press counts as confirmed when the finger was guided onto the key and the screen changed; it cannot tell a wrong key was pressed, so it ends by reading the display.
+- Demo-safe mode (Settings > For demonstrations): only the chosen saved device and its saved tasks, and no network requests while guiding.
+- Settings > My devices: rename, correct key labels, delete saved tasks, delete the device.
+- Tests that run on the Mac: `Tools/device-tests/run.sh`.
+- Not built: naming a saved task with different words ("heat my coffee"). Saved tasks are matched to the words they were first asked with.
+
 ## Before the demo
 
 - Turn the recorder off by default (`TrackRecorder.init`, and the default in `SettingsView`).
-- Not started: demo-safe mode, saved devices and voice shortcuts, shared appliance library, 3D spatial audio with head tracking, Transparency reminder, on-device planning, low-vision magnifier, translation. Nischal said there is no 8 PM freeze: the presentation is being made in parallel.
+- Not started: voice shortcuts under a new name, shared appliance library, 3D spatial audio with head tracking, Transparency reminder, on-device planning, low-vision magnifier, translation. Nischal said there is no 8 PM freeze: the presentation is being made in parallel.
 - `README.md` is out of date for the Watch, the aiming help and the height gate.
 - Open questions in `QUESTIONS.md`: 1, 2, 5, 7.
 - Watch sometimes goes quiet part-way through a task; not diagnosed.

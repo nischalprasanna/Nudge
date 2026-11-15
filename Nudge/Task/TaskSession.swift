@@ -85,6 +85,10 @@ final class TaskSession: ObservableObject {
     private var isPrepared = false
     /// When the current attempt began. Nil once it has been written to the test log.
     private var attemptStarted: Date?
+    /// The saved device the screen in front of the camera has been recognised as, if any.
+    private var deviceFit: DeviceFit?
+    /// What planned the current task, when it was not the cloud planner.
+    private var usedPlannerName: String?
 
     init() {
         guidance = GuidanceEngine(tones: tones, speaker: speaker)
@@ -197,7 +201,8 @@ final class TaskSession: ObservableObject {
         if channels.tones { on.append("tones") }
         if channels.voice { on.append("voice") }
         if channels.watch { on.append("watch") }
-        let screen = pipeline.screenSizeText.isEmpty ? "Unsaved screen" : "Unsaved screen (\(pipeline.screenSizeText))"
+        var screen = pipeline.screenSizeText.isEmpty ? "Unsaved screen" : "Unsaved screen (\(pipeline.screenSizeText))"
+        if let device = deviceFit?.device { screen = device.name }
         TestLog.shared.add(TaskRecord(startedAt: started,
                                       device: screen,
                                       goal: goal,
@@ -207,7 +212,7 @@ final class TaskSession: ObservableObject {
                                       recoveries: trail.filter { $0.state == .failed }.count,
                                       seconds: Date().timeIntervalSince(started),
                                       channels: on.isEmpty ? "none" : on.joined(separator: "+"),
-                                      planner: plannerName))
+                                      planner: usedPlannerName ?? plannerName))
     }
 
     // MARK: Saved preferences
@@ -277,7 +282,11 @@ final class TaskSession: ObservableObject {
     // MARK: The task loop
 
     private func run(typedGoal: String?) async {
-        guard let planner else {
+        let cloudPlanner = self.planner
+        let demoSafe = DemoSafe.isOn
+        deviceFit = nil
+        usedPlannerName = nil
+        if cloudPlanner == nil, DeviceStore.shared.devices.isEmpty {
             await speaker.sayAndWait("The cloud key is not set yet, so I can't plan steps.")
             return
         }
@@ -382,8 +391,32 @@ final class TaskSession: ObservableObject {
         }
         if Task.isCancelled { return }
         DebugLog.add("screen: found after \(String(format: "%.1f", Date().timeIntervalSince(searchStarted))) s, \(pipeline.screenSizeText), \(current.reading.elements.count) labels: \(current.reading.elements.map(\.label).joined(separator: " | "))")
-        await speaker.sayAndWait("Found it.")
+        // Is this a device used before? If so its saved labels replace whatever was misread.
+        var recognised = DeviceStore.shared.recognise(current.reading, preferred: DemoSafe.deviceID)
+        if recognised == nil, demoSafe, !DeviceStore.shared.devices.isEmpty {
+            // Demo-safe mode depends on it, so look twice more before giving up.
+            for _ in 0..<2 where recognised == nil && !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 600_000_000)
+                if let again = await pipeline.readScreenNow() {
+                    recognised = DeviceStore.shared.recognise(again.reading, preferred: DemoSafe.deviceID)
+                    if recognised != nil { current = again }
+                }
+            }
+        }
+        let unsavedReading = current.reading
+        if let recognised {
+            deviceFit = recognised
+            current.reading = DeviceStore.apply(recognised, to: current.reading)
+            DebugLog.add("device: recognised \"\(recognised.device.name)\" from \(recognised.matched) labels; now \(current.reading.elements.map(\.label).joined(separator: " | "))")
+            await speaker.sayAndWait("Found it. This is \(recognised.device.name).")
+        } else {
+            await speaker.sayAndWait("Found it.")
+        }
         if await stopIfPayment(current.reading) { return }
+        if demoSafe, deviceFit == nil {
+            await fail("Demo-safe mode is on, and I don't recognise this screen as a saved device. Turn demo-safe mode off in Settings to use it.")
+            return
+        }
 
         // 3. Get the goal.
         var spokenGoal = typedGoal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -400,6 +433,43 @@ final class TaskSession: ObservableObject {
         }
         goal = spokenGoal
         DebugLog.add("goal: \"\(spokenGoal)\"\(typedGoal == nil ? "" : " (typed)")")
+
+        // A goal done before on this device is replayed from the phone: no planning, no network.
+        var routine = deviceFit.flatMap { DeviceStore.routine(for: spokenGoal, on: $0.device) }
+        if routine == nil, demoSafe, let device = deviceFit?.device {
+            guard !device.routines.isEmpty else {
+                await fail("Demo-safe mode is on, but nothing has been saved for \(device.name) yet. Turn it off, do the task once, and I'll remember it.")
+                return
+            }
+            let known = device.routines.map(\.phrase).joined(separator: ", or ")
+            phase = .listening
+            let second = await ask("In demo-safe mode I can do: \(known). Which would you like?") ?? ""
+            if Task.isCancelled { return }
+            routine = DeviceStore.routine(for: second, on: device)
+            guard routine != nil else {
+                await fail("I don't have that saved, so I've stopped. Turn demo-safe mode off to plan something new.")
+                return
+            }
+            spokenGoal = second
+            goal = second
+            DebugLog.add("goal: \"\(second)\" (second try, demo-safe)")
+        }
+        let planner: TaskPlanner
+        if let routine, let device = deviceFit?.device {
+            let saved = RoutinePlanner(routine: routine, deviceName: device.name, fallback: demoSafe ? nil : cloudPlanner)
+            planner = saved
+            usedPlannerName = saved.name
+            DebugLog.add("routine: using saved \"\(routine.phrase)\": \(routine.steps.joined(separator: " > "))\(demoSafe ? " (demo-safe, no network)" : "")")
+        } else if let cloudPlanner {
+            planner = cloudPlanner
+        } else {
+            await fail("I haven't done that on this device before, and the cloud key is not set, so I can't plan it.")
+            return
+        }
+        var pressedLabels: [String] = []
+        var pressedPoints: [CGPoint] = []
+        // Every reading of the screen during the task, as read (before any saved labels).
+        var unsavedReadings = [unsavedReading]
 
         // 4. Plan the route, then guide, verify, repeat.
         //
@@ -467,6 +537,8 @@ final class TaskSession: ObservableObject {
                 switch step.action {
                 case .done:
                     await succeed(step.say.isEmpty ? "Done." : step.say)
+                    await remember(goal: spokenGoal, pressed: pressedLabels, at: pressedPoints, readings: unsavedReadings,
+                                   wasReplay: usedPlannerName != nil, demoSafe: demoSafe)
                     return
 
                 case .refusePayment:
@@ -575,6 +647,8 @@ final class TaskSession: ObservableObject {
             Haptics.tap()
             if let last = trail.indices.last { trail[last].state = .done }
             history.append(CompletedStep(targetName: stop.name, expected: stop.expect))
+            pressedLabels.append(stop.label ?? stop.name)
+            pressedPoints.append(stop.target.uv)
             previous = current.reading
             confirmedRisk = false
             check?.task?.cancel()
@@ -586,6 +660,7 @@ final class TaskSession: ObservableObject {
             DebugLog.add(String(format: "read: %d labels after %.1f s, changed %@", fresh.reading.elements.count,
                                 Date().timeIntervalSince(readStarted), screenChanged ? "yes" : "no"))
             if await stopIfPayment(current.reading) { return }
+            if deviceFit == nil { unsavedReadings.append(current.reading) }
 
             // Have the planner check this press, and say what comes next, while the user moves on.
             let request = makeRequest(goal: spokenGoal, current: current, previous: previous, history: history,
@@ -718,8 +793,62 @@ final class TaskSession: ObservableObject {
         if Self.labels(of: latest.reading) != Self.labels(of: before) { return latest }
         try? await Task.sleep(nanoseconds: 500_000_000)
         if Task.isCancelled { return nil }
-        if let again = await pipeline.readScreenNow() { latest = again }
+        if let again = await readNow() { latest = again }
         return latest
+    }
+
+    /// Reads the screen and, on a recognised device, puts its saved labels on the keys.
+    /// The keys are fitted afresh when enough of them are read; otherwise where they were
+    /// last time is used, since the outline has not moved.
+    private func readNow() async -> (reading: ScreenReading, image: CGImage)? {
+        guard var result = await pipeline.readScreenNow() else { return nil }
+        if let known = deviceFit {
+            let fit = DeviceStore.fit(known.device, to: result.reading) ?? known
+            deviceFit = fit
+            result.reading = DeviceStore.apply(fit, to: result.reading)
+        }
+        return result
+    }
+
+    /// After a task that went right first time: keep the route for this goal, and offer to
+    /// keep the device if it is new.
+    private func remember(goal: String, pressed: [String], at points: [CGPoint], readings: [ScreenReading],
+                          wasReplay: Bool, demoSafe: Bool) async {
+        guard !wasReplay, !demoSafe, !pressed.isEmpty, !Task.isCancelled,
+              !trail.contains(where: { $0.state == .failed }) else { return }
+        if let device = deviceFit?.device {
+            // Only keys that are on the saved device can be found again without help.
+            let known = Set(device.keys.map { DeviceStore.key($0.label) })
+            guard pressed.allSatisfy({ known.contains(DeviceStore.key($0)) }) else {
+                DebugLog.add("device: \"\(goal)\" not remembered, it pressed something that is not a saved key")
+                return
+            }
+            DeviceStore.shared.remember(Routine(phrase: goal, steps: pressed), on: device.id)
+            DebugLog.add("device: remembered \"\(goal)\" on \(device.name): \(pressed.joined(separator: " > "))")
+            return
+        }
+        // A new device. Its keys are taken from every reading made during the task, and the
+        // presses are matched to those keys by where they were, not by what one reading called them.
+        let keys = DeviceStore.keys(from: readings)
+        var steps: [String] = []
+        for point in points {
+            guard let key = keys.first(where: { $0.box.contains(point) }) else { break }
+            steps.append(key.label)
+        }
+        guard keys.count >= 6, steps.count == points.count else {
+            DebugLog.add("device: not offered for saving, \(keys.count) readable keys and \(steps.count) of \(points.count) presses on them")
+            return
+        }
+        let routine = Routine(phrase: goal, steps: steps)
+        phase = .listening
+        let answer = await ask("Shall I remember this device, so next time is instant and needs no internet? Say yes or no.", maxSeconds: 6) ?? ""
+        guard Self.isYes(answer), !Task.isCancelled else { return }
+        var name = (await ask("What shall I call it?", maxSeconds: 6) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if name.isEmpty { name = DeviceStore.shared.freshName() }
+        if Task.isCancelled { return }
+        DeviceStore.shared.add(SavedDevice(name: name, keys: keys, routines: [routine]))
+        DebugLog.add("device: saved \"\(name)\" with \(keys.count) keys and \"\(goal)\"")
+        await speaker.sayAndWait("Saved as \(name). Only its labels and their positions are kept, on this phone.")
     }
 
     // MARK: Steps
@@ -728,7 +857,7 @@ final class TaskSession: ObservableObject {
     private func readScreen() async -> (reading: ScreenReading, image: CGImage)? {
         for attempt in 0..<5 {
             if Task.isCancelled { return nil }
-            if let result = await pipeline.readScreenNow() { return result }
+            if let result = await readNow() { return result }
             if attempt == 0 || attempt == 2 {
                 await speaker.sayAndWait(Phrases.backToFit)
             }
@@ -748,7 +877,7 @@ final class TaskSession: ObservableObject {
         for _ in 0..<2 {
             if Task.isCancelled { return nil }
             try? await Task.sleep(nanoseconds: 450_000_000)
-            guard let next = await pipeline.readScreenNow() else { break }
+            guard let next = await readNow() else { break }
             let settled = Self.labels(of: next.reading) == Self.labels(of: latest.reading)
             latest = next
             // Two matching reads in a row means the screen has stopped changing. If it still looks

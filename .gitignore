@@ -22,3 +22,5 @@ Tools/track-replay/depthview
 *.bin
 Tools/track-replay/ridgetest
 Tools/track-replay/heights
+Tools/device-tests/matching-test
+Tools/device-tests/routine-test

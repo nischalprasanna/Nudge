@@ -14,6 +14,9 @@ struct SettingsView: View {
     @AppStorage("wornOnChest") private var wornOnChest = false
     @AppStorage("marker.on") private var markerOn = false
     @AppStorage(TrackRecorder.settingKey) private var recordTracking = true
+    @AppStorage(DemoSafe.onKey) private var demoSafe = false
+    @AppStorage(DemoSafe.deviceKey) private var demoDevice = ""
+    @ObservedObject private var store = DeviceStore.shared
 
     private var plannerName: String {
         CloudPlanner.fromConfiguredKeys()?.name ?? "Not set up (no key in this build)"
@@ -40,6 +43,51 @@ struct SettingsView: View {
                     Text("How Nudge guides you")
                 } footer: {
                     Text("Use any combination. Tones move left and right with the button, rise when it is higher, and speed up as you get close. With tones and voice both off, guidance comes through the watch alone.")
+                }
+
+                Section {
+                    if store.devices.isEmpty {
+                        Text("No saved devices yet. After a task goes right, Nudge offers to remember the device.")
+                            .foregroundStyle(.secondary)
+                    }
+                    ForEach(store.devices) { device in
+                        NavigationLink {
+                            DeviceDetailView(deviceID: device.id)
+                        } label: {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(device.name)
+                                Text("\(device.keys.count) keys, \(device.routines.count) saved \(device.routines.count == 1 ? "task" : "tasks")")
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("My devices")
+                } footer: {
+                    Text("A saved device keeps its key labels and where they are, never pictures, and only on this phone. On a saved device, a task you have done before starts at once and needs no internet.")
+                }
+
+                Section {
+                    Toggle(isOn: $demoSafe) {
+                        Label("Demo-safe mode", systemImage: "lock.shield")
+                    }
+                    .disabled(store.devices.isEmpty)
+                    if demoSafe, !store.devices.isEmpty {
+                        Picker("Device", selection: $demoDevice) {
+                            ForEach(store.devices) { device in
+                                Text(device.name).tag(device.id.uuidString)
+                            }
+                        }
+                    }
+                } header: {
+                    Text("For demonstrations")
+                } footer: {
+                    Text("With this on, Nudge uses only the chosen saved device and the tasks saved for it, and makes no network requests while guiding, so a dropped connection cannot stall it. Tasks that have not been saved are not available until it is turned off. Speech is recognised on the phone where the phone supports that.")
+                }
+                .onAppear {
+                    if store.device(UUID(uuidString: demoDevice)) == nil { demoDevice = store.devices.first?.id.uuidString ?? "" }
+                    if store.devices.isEmpty { demoSafe = false }
                 }
 
                 Section {
