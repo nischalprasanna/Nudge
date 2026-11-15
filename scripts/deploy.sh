@@ -43,6 +43,9 @@ rm -f "$DEVICES_JSON"
 
 if [[ $PHONE_ONLY == 1 ]]; then
   # Derive a spec without the Watch target, so signing does not need a registered Watch.
+  # Do not use this once the Watch app matters: an iPhone app installed without its Watch app
+  # makes the Watch remove the one it has. That is how the Watch app went missing on 14 Nov.
+  echo "Note: --phone-only installs an iPhone app with no Watch app inside it, and the Watch will remove its copy."
   python3 -I - <<'EOF'
 s = open("project.yml").read()
 s = s.replace("name: Nudge\n", "name: NudgePhoneOnly\n", 1)
