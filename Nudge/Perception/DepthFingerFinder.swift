@@ -63,9 +63,9 @@ struct DepthFingerFinder {
     var raiseOutside: Float = 0.015
     /// Nothing higher than this above the glass is a pointing finger about to press.
     var ceiling: Float = 0.20
-    /// Taken off the far end of the ridge. Measured against the hand tracker on recorded frames,
-    /// the ridge's end and the tracker's fingertip land in the same place, so this is zero.
-    var tipInset: Float = 0
+    /// Taken off the far end of the ridge (negative carries it further on). Measured against the
+    /// hand tracker on two recordings, the ridge ended 3 to 5 mm short of the tracker's fingertip.
+    var tipInset: Float = -0.003
     /// Measured on recorded frames: the depth map shows a finger about two of its pixels to one
     /// side of where the camera picture shows it (raw picture, y direction). Depth samples are
     /// moved back by this much before use.

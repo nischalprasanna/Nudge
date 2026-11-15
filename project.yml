@@ -32,6 +32,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nudgea11y.Nudge
         TARGETED_DEVICE_FAMILY: "1"
+        # Optimised even in the Debug build that goes on the phone. Unoptimised, the per-frame
+        # depth work took about 25 ms and halved the camera's frame rate.
+        SWIFT_OPTIMIZATION_LEVEL: "-O"
+        SWIFT_COMPILATION_MODE: wholemodule
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     info:
       path: Nudge/Info.plist
