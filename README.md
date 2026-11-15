@@ -104,14 +104,16 @@ The cloud key is built into the app. That is acceptable for a demo on the author
 
 ## How it compares with earlier work
 
-| | Needs setup per device | Plans toward a goal | Checks each press | Guidance |
+| | Needs setup per device | Plans toward a goal | Checks each press | Guides the finger |
 |---|---|---|---|---|
-| Apple Magnifier "Point and Speak" | No | No, reads text under the finger | No | Speech |
-| VizLens (research) | Yes: a reference photo labelled by crowd workers | No | No | Speech |
-| StateLens (research) | Yes: videos of the device, plus crowd labelling | Yes, from a pre-built model of the device | Follows its pre-built state model | Speech |
-| Nudge | No | Yes | Yes, by re-reading the screen | Stereo tones, speech and Watch haptics |
+| Apple Magnifier "Point and Speak" | No | No | No | No: it reads the text under the finger |
+| VizLens (research) | Yes: a reference photo labelled by crowd workers | No: one chosen control at a time | No | Yes: beeps or spoken directions to the chosen control |
+| StateLens (research) | Yes: videos of the device, plus crowd labelling | Yes, from a pre-built model of the device | Follows its pre-built state model | Yes: spoken guidance, with 3D-printed finger accessories |
+| Nudge | No | Yes | Yes, by re-reading the screen | Yes: stereo tones, speech and Watch haptics |
 
-This table reflects our reading of the published descriptions of those systems, not a side-by-side test.
+Guiding a finger to a control is not new: VizLens and StateLens both do it, and other research has gone further in hardware (BrushLens, a phone case that taps a kiosk for the user; FingerRover, a small robot worn on the finger). What we have not found, in a short search on 15 November 2026, is a system or product that does all of it on a device it has never seen: plan a multi-step goal, guide the finger, and check each press, with no per-device setup. Shipping products we looked at (Apple's Point and Speak and Magnifier, Meta's glasses with Be My Eyes, Envision) describe what is in view or connect the user to a sighted person.
+
+This reflects our reading of published descriptions and a short web search, not a side-by-side test or a full literature review.
 
 ## Honest limitations
 
