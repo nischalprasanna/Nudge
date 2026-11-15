@@ -18,6 +18,8 @@ struct TaskView: View {
     @State private var didAutoStart = false
     /// The phone is tucked into a shirt or on a lanyard, screen against the body.
     @AppStorage("wornOnChest") private var wornOnChest = false
+    @Environment(\.scenePhase) private var scenePhase
+    @State private var wasInBackground = false
 
     var body: some View {
         GeometryReader { proxy in
@@ -48,7 +50,16 @@ struct TaskView: View {
             session.prepare()
             if autoStart, !didAutoStart {
                 didAutoStart = true
-                session.start()
+                session.start(handsFree: wornOnChest)
+            }
+        }
+        .onChange(of: scenePhase) { _, phase in
+            // Worn on the chest, the app is reopened by voice ("Hey Siri, open Nudge"), and
+            // nothing can be pressed: coming back to this screen starts the conversation again.
+            if phase == .background { wasInBackground = true }
+            if phase == .active, wasInBackground {
+                wasInBackground = false
+                if wornOnChest, !session.isRunning { session.start(handsFree: true) }
             }
         }
         .onDisappear {
@@ -73,6 +84,28 @@ struct TaskView: View {
             CameraPane(pipeline: session.pipeline)
                 .accessibilityHidden(true)
 
+            // The hands-free opening: Nudge is asking what to do and the camera has no job yet.
+            if session.isGreeting {
+                ZStack {
+                    Theme.ink
+                    VStack(spacing: 18) {
+                        NudgeWordmark()
+                        Image(systemName: "waveform")
+                            .font(.system(size: 54, weight: .bold))
+                            .foregroundStyle(Theme.signal)
+                            .symbolEffect(.variableColor.iterative, isActive: !reduceMotion)
+                        Text("What do you want to do?")
+                            .font(Theme.title(.title))
+                            .foregroundStyle(Theme.paper)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, Theme.gutter)
+                    }
+                    .padding(.top, 40)
+                }
+                .transition(.opacity)
+                .accessibilityHidden(true) // The status below says the same, and it is spoken aloud.
+            }
+
             HStack {
                 FloatingIconButton(systemName: "chevron.down", label: "Close",
                                    hint: "Stops the task and goes back") { dismiss() }
@@ -85,6 +118,7 @@ struct TaskView: View {
             .padding(.horizontal, Theme.gutter)
             .padding(.top, 58)
         }
+        .animation(Theme.fade, value: session.isGreeting)
         .clipShape(UnevenRoundedRectangle(bottomLeadingRadius: Theme.panelRadius,
                                           bottomTrailingRadius: Theme.panelRadius,
                                           style: .continuous))
@@ -174,7 +208,7 @@ struct TaskView: View {
         if session.isRunning {
             session.stop()
         } else {
-            session.start()
+            session.start(handsFree: wornOnChest)
         }
     }
 

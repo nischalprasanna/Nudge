@@ -14,10 +14,14 @@ cd "$(dirname "$0")/.."
 BUNDLE_ID="com.nudgea11y.Nudge"
 PHONE_ONLY=0
 BUILD_ONLY=0
+WATCH_TOO=0
 for arg in "$@"; do
   case "$arg" in
     --phone-only) PHONE_ONLY=1 ;;
     --build) BUILD_ONLY=1 ;;
+    # Also replace the app on the Watch. Only needed when Watch code has changed. It removes the
+    # Watch's copy before installing the new one, so only use it when the Watch shows as "connected".
+    --watch) WATCH_TOO=1 ;;
   esac
 done
 
@@ -80,7 +84,10 @@ xcrun devicectl device process launch --device "$PHONE" --terminate-existing "$B
 
 # With the full build, put the Watch app straight onto the Watch as well. Installing it from
 # the iPhone's Watch app left a half-finished install that blocked every later attempt.
-if [[ "$PROJECT" == "Nudge.xcodeproj" ]]; then
+if [[ "$PROJECT" == "Nudge.xcodeproj" && $WATCH_TOO == 0 ]]; then
+  echo "Watch: left as it is. Add --watch to update the Watch app (only when Watch code has changed)."
+fi
+if [[ "$PROJECT" == "Nudge.xcodeproj" && $WATCH_TOO == 1 ]]; then
   WATCH=$(xcrun devicectl list devices 2>/dev/null | grep -i "Apple Watch" | grep physical | grep connected | grep -oE '[0-9A-F]{8}-[0-9A-F]{16}' | head -1 || true)
   WATCH_APP="$DERIVED/Build/Products/Debug-watchos/NudgeWatch.app"
   if [[ -n "$WATCH" && -d "$WATCH_APP" ]]; then

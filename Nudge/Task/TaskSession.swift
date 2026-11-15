@@ -59,6 +59,9 @@ final class TaskSession: ObservableObject {
     @Published private(set) var trail: [TrailStep] = []
     @Published private(set) var outcome: Outcome = .none
     @Published private(set) var transcript: [String] = []
+    /// True while Nudge is asking for the goal before it has started looking for a screen
+    /// (the hands-free opening). The task screen shows a greeting in place of the camera.
+    @Published private(set) var isGreeting = false
     @Published private(set) var plannerName = "No planner (API key not set)"
     @Published var channels = TaskSession.savedChannels() {
         didSet {
@@ -143,7 +146,9 @@ final class TaskSession: ObservableObject {
         isPrepared = false
     }
 
-    func start(typedGoal: String? = nil) {
+    /// `handsFree` is for a phone worn on the chest, where nothing can be pressed: Nudge asks for
+    /// the goal before anything else, and when the task ends it asks by voice what to do next.
+    func start(typedGoal: String? = nil, handsFree: Bool = false) {
         guard !isRunning else { return }
         isRunning = true
         transcript.removeAll()
@@ -156,11 +161,43 @@ final class TaskSession: ObservableObject {
         if channels.watch { PhoneWatchLink.shared.sendGuidance(phase: .working) }
         attemptStarted = Date()
         runTask = Task { [weak self] in
-            await self?.run(typedGoal: typedGoal)
+            await self?.run(typedGoal: typedGoal, handsFree: handsFree)
             guard !Task.isCancelled else { return }
             self?.logAttempt(stopped: false)
+            var next: String?
+            if handsFree { next = await self?.askWhatNext() }
+            guard !Task.isCancelled else { return }
             self?.finish()
+            if let next { self?.start(typedGoal: next, handsFree: true) }
         }
+    }
+
+    /// Hands-free only: once a task has ended, ask by voice what to do now, since no button can
+    /// be pressed. Returns the next goal, or nil to rest.
+    private func askWhatNext() async -> String? {
+        guard outcome != .none, !Task.isCancelled else { return nil }
+        let failed = outcome == .problem
+        phase = .listening
+        let question = failed ? "Shall I try again? Say yes, or tell me something else to do."
+                              : "Is there anything else? Tell me what, or say no."
+        let answer = (await ask(question, maxSeconds: 8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if Task.isCancelled { return nil }
+        let words = Set(answer.lowercased().split(whereSeparator: { !$0.isLetter }).map(String.init))
+        // "No thanks", "that's all", "I'm done": nothing but words like these. A goal such as
+        // "stop the microwave" has other words in it and is taken as a goal.
+        let declines: Set<String> = ["no", "nope", "nah", "nothing", "stop", "done", "finished", "bye", "goodbye",
+                                     "thanks", "thank", "you", "that", "s", "is", "all", "i", "m", "am", "good", "else"]
+        if answer.isEmpty || words.isSubset(of: declines) {
+            await speaker.sayAndWait("Okay. Open Nudge again when you need me.")
+            return nil
+        }
+        if failed, Self.isYes(answer) || words.contains("again"), !goal.isEmpty { return goal }
+        if Self.isYes(answer), words.count <= 2 {
+            // "Yes" on its own after a success: ask what.
+            let more = (await ask("What would you like to do?", maxSeconds: 8) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            return more.isEmpty || Task.isCancelled ? nil : more
+        }
+        return answer
     }
 
     func stop(announce: Bool = true) {
@@ -281,7 +318,7 @@ final class TaskSession: ObservableObject {
 
     // MARK: The task loop
 
-    private func run(typedGoal: String?) async {
+    private func run(typedGoal: String?, handsFree: Bool) async {
         let cloudPlanner = self.planner
         let demoSafe = DemoSafe.isOn
         deviceFit = nil
@@ -289,6 +326,30 @@ final class TaskSession: ObservableObject {
         if cloudPlanner == nil, DeviceStore.shared.devices.isEmpty {
             await speaker.sayAndWait("The cloud key is not set yet, so I can't plan steps.")
             return
+        }
+
+        // Hands-free: the goal comes first, before the camera has anything to do. Someone with
+        // the phone on their chest opens the app and is spoken to straight away.
+        var earlyGoal = typedGoal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var goalWasSpoken = false
+        if handsFree, earlyGoal.isEmpty {
+            isGreeting = true
+            defer { isGreeting = false }
+            phase = .listening
+            earlyGoal = await ask("Hey, what do you want to do?") ?? ""
+            if earlyGoal.isEmpty, !Task.isCancelled {
+                earlyGoal = await ask("I didn't catch that. What do you want to do?") ?? ""
+            }
+            guard !earlyGoal.isEmpty, !Task.isCancelled else {
+                if !Task.isCancelled { await speaker.sayAndWait("I didn't hear anything. Open Nudge again when you're ready.") }
+                return
+            }
+            goalWasSpoken = true
+            goal = earlyGoal
+            DebugLog.add("goal: \"\(earlyGoal)\" (asked first, hands-free)")
+            await speaker.sayAndWait("Okay. \(earlyGoal).")
+            isGreeting = false
+            if Task.isCancelled { return }
         }
 
         // 1. Find and anchor the screen, and 2. read it.
@@ -419,7 +480,7 @@ final class TaskSession: ObservableObject {
         }
 
         // 3. Get the goal.
-        var spokenGoal = typedGoal?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        var spokenGoal = earlyGoal
         if spokenGoal.isEmpty {
             phase = .listening
             spokenGoal = await ask("What would you like to do?") ?? ""
@@ -432,7 +493,7 @@ final class TaskSession: ObservableObject {
             return
         }
         goal = spokenGoal
-        DebugLog.add("goal: \"\(spokenGoal)\"\(typedGoal == nil ? "" : " (typed)")")
+        if !goalWasSpoken { DebugLog.add("goal: \"\(spokenGoal)\"\(typedGoal == nil ? "" : " (given at start)")") }
 
         // A goal done before on this device is replayed from the phone: no planning, no network.
         var routine = deviceFit.flatMap { DeviceStore.routine(for: spokenGoal, on: $0.device) }

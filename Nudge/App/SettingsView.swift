@@ -97,7 +97,7 @@ struct SettingsView: View {
                 } header: {
                     Text("How you carry the phone")
                 } footer: {
-                    Text("Turn this on when the phone is tucked into a shirt or hangs on a lanyard with its screen against you. During a task the screen switches off and ignores touches while it is covered, so your body cannot press Stop. Take the phone out to use the controls. Aiming directions are given as body movements: lean forward, lean back, turn your body.")
+                    Text("Turn this on when the phone is tucked into a shirt or hangs on a lanyard with its screen against you. Nudge then works by voice alone: as soon as it opens it asks what you want to do, and when a task ends it asks what to do next, so nothing needs pressing. Open it by saying \"Hey Siri, open Nudge\". The buttons all still work. During a task the screen switches off and ignores touches while it is covered, so your body cannot press Stop. Take the phone out to use the controls. Aiming directions are given as body movements: lean forward, lean back, turn your body.")
                 }
 
                 Section {

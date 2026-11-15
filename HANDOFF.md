@@ -54,6 +54,13 @@ Measured on a recording, then changed. See the end of this section for what was 
 - Tests that run on the Mac: `Tools/device-tests/run.sh`.
 - Not built: naming a saved task with different words ("heat my coffee"). Saved tasks are matched to the words they were first asked with.
 
+## Hands-free opening for a phone worn on the chest (Sunday about 1:30 AM, installed, not yet tried)
+
+- With Settings > "Worn on the chest" on, the app opens straight into the task screen and asks aloud "Hey, what do you want to do?" before looking for a screen. It repeats the goal back, then finds the screen with the body-movement aiming help ("Lean forward a little").
+- When a task ends it asks by voice whether there is anything else (or whether to try again after a failure), so no button is needed. Coming back to the app from the background starts the conversation again.
+- Every button is still there and works. Opening the app by voice is the system's "Hey Siri, open Nudge".
+- The low-vision magnifier was started and dropped at Nischal's request: not needed for the recorded demo.
+
 ## Installing the Watch app (learned the hard way on 15 November)
 
 - Never install with `scripts/deploy.sh --phone-only` once the Watch app is in use: an iPhone app with no Watch app inside it makes the Watch delete its copy.
