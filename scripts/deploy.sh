@@ -88,6 +88,9 @@ if [[ "$PROJECT" == "Nudge.xcodeproj" ]]; then
     xcrun devicectl device install app --device "$WATCH" "$WATCH_APP" 2>&1 | grep -E 'bundleID|ERROR' | sed 's/^/Watch: /' || true
   else
     echo "Watch: not connected to this Mac, so the Watch app was not installed."
+    echo "       The Mac and the Watch must be on the same Wi-Fi and able to see each other. Campus Wi-Fi does"
+    echo "       not work. Use a hotspot from a phone other than the paired iPhone, with Maximize Compatibility"
+    echo "       on (the Watch SE only joins 2.4 GHz), and keep the Watch unlocked on the wrist."
   fi
 fi
 echo "Done."

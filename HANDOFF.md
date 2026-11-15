@@ -54,6 +54,12 @@ Measured on a recording, then changed. See the end of this section for what was 
 - Tests that run on the Mac: `Tools/device-tests/run.sh`.
 - Not built: naming a saved task with different words ("heat my coffee"). Saved tasks are matched to the words they were first asked with.
 
+## Installing the Watch app (learned the hard way on 15 November)
+
+- Never install with `scripts/deploy.sh --phone-only` once the Watch app is in use: an iPhone app with no Watch app inside it makes the Watch delete its copy.
+- Installing from the iPhone's Watch app fails ("Unable to install") and leaves a stuck install. Install from the Mac instead: `scripts/deploy.sh` does an uninstall and then a direct install.
+- The Mac can only reach the Watch when both are on the same Wi-Fi and can see each other. Campus Wi-Fi did not work. What worked: a hotspot from a phone other than the paired iPhone, with Maximize Compatibility switched on (the Watch SE would not join until then), the Mac on the same hotspot, the iPhone on the cable, the Watch unlocked on the wrist. `xcrun devicectl list devices` should show the Watch as "connected".
+
 ## Before the demo
 
 - Turn the recorder off by default (`TrackRecorder.init`, and the default in `SettingsView`).
